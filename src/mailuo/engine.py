@@ -277,11 +277,92 @@ class MailuoEngine:
             agent_execution=exec_res,
         )
 
+    def launch_agent_interactive(
+        self,
+        agent_backend: str,
+        initial_prompt: Optional[str] = None,
+        cwd: Optional[str | Path] = None,
+    ) -> Optional[TopicSession]:
+        """直接拉起 `pi` 或 `agy` 交互式界面（用于与 Agent 讨论具体话题，而不是把 pi/agy 当作话题名！）.
+
+        - 如果当前已有激活的具体话题 Session：在该话题脉络下拉起 `pi` 或 `agy`；
+        - 如果当前还没有激活的话题：创建一个待定标题的空白容器拉起纯净的 `pi` 或 `agy`；
+          等用户在 `pi` / `agy` 里聊完退出后，根据用户在里面说的第一句话自动生成真实的话题标题与脉络摘要！
+        """
+        active_sess = self.get_active_session()
+        is_placeholder = False
+
+        if active_sess is None:
+            is_placeholder = True
+            active_sess = TopicSession(
+                title="未命名新话题",
+                tags=[],
+                status=SessionStatus.ACTIVE,
+            )
+
+        theme = (
+            self.storage.get_theme(active_sess.theme_id)
+            if active_sess.theme_id
+            else None
+        )
+        recent_msgs = (
+            self.storage.get_session_messages(active_sess.id, include_ephemeral=False, limit=8)
+            if not is_placeholder
+            else []
+        )
+
+        exec_res = self._invoke_external_agent(
+            agent_backend=agent_backend,
+            session=active_sess,
+            prompt=initial_prompt,
+            theme=theme,
+            recent_messages=recent_msgs,
+            is_tangent=False,
+            interactive=True,
+            cwd=cwd,
+        )
+
+        captured = exec_res.captured_messages or []
+        if not captured and is_placeholder and not initial_prompt:
+            # 用户打开了交互式界面但一句话没说就直接退出了，不保存空垃圾 Session
+            return None
+
+        # 如果之前是未命名占位符，或者标题曾被误设为 "Google agy 专题讨论" / "pi.dev 专题讨论"
+        if is_placeholder or active_sess.title in ("未命名新话题", "Google agy 专题讨论", "pi.dev 专题讨论"):
+            first_user_text = initial_prompt or next(
+                (m["content"] for m in captured if m["role"] == "user"),
+                "",
+            )
+            if first_user_text:
+                title, tags = self.llm._extract_title_and_tags(first_user_text)
+                active_sess.title = title
+                active_sess.tags = list(dict.fromkeys(active_sess.tags + tags))
+
+        # 将交互式会话中捕获的新消息同步写入脉络库
+        existing_contents = {m.content for m in recent_msgs}
+        for m in captured:
+            if m["content"] not in existing_contents:
+                self.storage.add_message(
+                    MessageRecord(
+                        session_id=active_sess.id,
+                        role=m["role"],
+                        content=m["content"],
+                        agent_source=agent_backend if m["role"] == "assistant" else "user",
+                        is_ephemeral=False,
+                    )
+                )
+
+        all_clean_msgs = self.storage.get_session_messages(active_sess.id, include_ephemeral=False)
+        active_sess = self.llm.update_session_state(active_sess, all_clean_msgs)
+        self.storage.save_session(active_sess)
+        self.storage.set_active_session_id(active_sess.id)
+        return active_sess
+
     def _invoke_external_agent(
         self,
         agent_backend: str,
         session: TopicSession,
-        prompt: str,
+        prompt: Optional[str],
         theme: Optional[CoreTheme],
         recent_messages: list[MessageRecord],
         is_tangent: bool,

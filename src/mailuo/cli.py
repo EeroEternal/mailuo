@@ -258,21 +258,25 @@ def run_repl(engine: MailuoEngine) -> None:
             prompt_part = text[3:].strip()
             if prompt_part:
                 res = engine.chat(prompt_part, agent_backend="pi")
+                render_turn(text, res, engine.storage.db_label)
             else:
-                if not active:
-                    engine.create_topic_session(title="pi.dev 专题讨论", tags=["pi.dev"])
-                res = engine.chat("进入 pi 交互式会话", agent_backend="pi", interactive_agent=True)
-            render_turn(text, res, engine.storage.db_label)
+                sess = engine.launch_agent_interactive("pi")
+                if sess:
+                    console.print(
+                        f"[bold green]✅ 已将刚才在 pi.dev 中的讨论同步至话题《{sess.title}》({sess.id})[/bold green]"
+                    )
             continue
         if text == "agy" or text.startswith("agy "):
             prompt_part = text[4:].strip()
             if prompt_part:
                 res = engine.chat(prompt_part, agent_backend="agy")
+                render_turn(text, res, engine.storage.db_label)
             else:
-                if not active:
-                    engine.create_topic_session(title="Google agy 专题讨论", tags=["agy"])
-                res = engine.chat("进入 agy 交互式会话", agent_backend="agy", interactive_agent=True)
-            render_turn(text, res, engine.storage.db_label)
+                sess = engine.launch_agent_interactive("agy")
+                if sess:
+                    console.print(
+                        f"[bold green]✅ 已将刚才在 Google agy 中的讨论同步至话题《{sess.title}》({sess.id})[/bold green]"
+                    )
             continue
 
         res = engine.chat(text)
@@ -290,8 +294,8 @@ HELP_TEXT = """[bold cyan]mai (脉络 Mailuo) — 多用户云端隔离极简 CL
 日常脉络操作:
   [bold green]mai[/bold green]                           启动交互式对话
   [bold green]mai "<任意对话内容>"[/bold green]          直接发送一句话（自动路由/穿插隔离/调出历史话题/整理主题）
-  [bold green]mai pi [提问内容][/bold green]             在当前脉络下拉起 [bold]pi.dev[/bold]（不带内容则进入 pi 交互式 TUI）
-  [bold green]mai agy [提问内容][/bold green]            在当前脉络下拉起 [bold]Google agy[/bold]（不带内容则进入 agy 交互式界面）
+  [bold green]mai pi [提问内容][/bold green]             使用 [bold]pi.dev[/bold] 来讨论话题（退出后自动提取你聊的内容生成脉络摘要）
+  [bold green]mai agy [提问内容][/bold green]            使用 [bold]Google agy[/bold] 来讨论话题（退出后自动提取你聊的内容生成脉络摘要）
   [bold green]mai ls[/bold green]                        查看当前账号下的所有具体话题 Sessions
   [bold green]mai themes[/bold green]                    把当前账号下的零散 Session 整理成『最核心主题』
   [bold green]mai sync[/bold green]                      将本机 pi.dev 和 agy 的历史记录一键同步至当前账号下
@@ -385,21 +389,25 @@ def main() -> None:
     if cmd == "pi":
         if rest:
             res = engine.chat(rest, agent_backend="pi")
+            render_turn(f"mai pi {rest}".strip(), res, engine.storage.db_label)
         else:
-            if not engine.get_active_session():
-                engine.create_topic_session(title="pi.dev 专题讨论", tags=["pi.dev"])
-            res = engine.chat("拉起 pi 交互式会话", agent_backend="pi", interactive_agent=True)
-        render_turn(f"mai pi {rest}".strip(), res, engine.storage.db_label)
+            sess = engine.launch_agent_interactive("pi")
+            if sess:
+                console.print(
+                    f"[bold green]✅ 已将刚才在 pi.dev 中的讨论同步至话题《{sess.title}》({sess.id}) — {engine.storage.db_label}[/bold green]"
+                )
         return
 
     if cmd == "agy":
         if rest:
             res = engine.chat(rest, agent_backend="agy")
+            render_turn(f"mai agy {rest}".strip(), res, engine.storage.db_label)
         else:
-            if not engine.get_active_session():
-                engine.create_topic_session(title="Google agy 专题讨论", tags=["agy"])
-            res = engine.chat("拉起 agy 交互式会话", agent_backend="agy", interactive_agent=True)
-        render_turn(f"mai agy {rest}".strip(), res, engine.storage.db_label)
+            sess = engine.launch_agent_interactive("agy")
+            if sess:
+                console.print(
+                    f"[bold green]✅ 已将刚才在 Google agy 中的讨论同步至话题《{sess.title}》({sess.id}) — {engine.storage.db_label}[/bold green]"
+                )
         return
 
     # 其他情况：直接把参数当做自然语言对话输入！

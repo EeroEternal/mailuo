@@ -171,7 +171,20 @@ def test_pi_and_agy_bridges_command_and_transcript_sync(tmp_path: Path) -> None:
         prompt="请帮我把刚才在 pi 里讨论的网关缓存逻辑写成代码",
         is_tangent=False,
     )
-    assert any("【Mailuo 脉络上下文】" in arg for arg in agy_cmd)
+    assert any("【Mailuo 历史脉络背景】" in arg for arg in agy_cmd)
+
+    # 6. 验证全新话题下直接运行 `mai agy` (interactive=True, prompt=None) 时，纯净启动 `agy`，绝不发送『Google agy 专题讨论』或『拉起 agy 交互式会话』
+    from mailuo.models import TopicSession
+
+    empty_sess = TopicSession(title="未命名新话题")
+    clean_agy_cmd = agy_bridge.build_command(
+        empty_sess,
+        prompt=None,
+        interactive=True,
+    )
+    assert clean_agy_cmd == [agy_bridge.agy_bin]
+    assert "-i" not in clean_agy_cmd
+
 
 
 def test_multi_user_tenant_isolation(tmp_path: Path) -> None:
