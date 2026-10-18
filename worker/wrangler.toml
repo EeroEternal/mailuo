@@ -1,0 +1,8 @@
+name = "mailuo-api"
+main = "index.js"
+compatibility_date = "2024-11-01"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "mailuo-db"
+database_id = "74d3d401-b084-41bd-9f13-0be9a62e56ea"

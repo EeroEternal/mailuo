@@ -1,9 +1,8 @@
-"""Cloudflare D1 + Local SQLite Storage Engine for Mailuo (脉络).
+"""Multi-Tenant Cloudflare Worker + D1 Storage Engine & User Auth for Mailuo (`mai`).
 
-默认优先将所有数据持久化保存到 **Cloudflare D1 (`mailuo-db`)**，同时支持本地 SQLite 缓存/回退：
-- 自动发现本机 Wrangler 登录凭证 (`~/Library/Preferences/.wrangler/config/default.toml` 或 `~/.config/.wrangler/config/default.toml`)
-- 或使用环境变量 `CLOUDFLARE_API_TOKEN`、`CLOUDFLARE_ACCOUNT_ID`、`MAILUO_D1_DATABASE_ID`
-- 当指定 `db_path="d1"`（默认）且凭证有效时，所有 `core_themes`、`topic_sessions`、`messages`、`app_state` 均实时写入 Cloudflare D1 云端数据库。
+- 云端网关默认地址：`https://mailuo-api.lipeng-sh.workers.dev`（后端直连 Cloudflare D1 `mailuo-db`）
+- 任何一台机器只需 `pip install` 后运行 `mai register` 或 `mai login`，无需在机器上装 `wrangler` 或配置 Cloudflare 密钥。
+- 所有表 (`tenant_core_themes`、`tenant_topic_sessions`、`tenant_messages`、`tenant_app_state`) 均通过 `user_id` 严格做租户隔离，每个人的数据完全独立、绝不串号。
 """
 
 from __future__ import annotations
@@ -17,12 +16,13 @@ import urllib.error
 import urllib.request
 from collections import Counter
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
 
 from .models import CoreTheme, MessageRecord, SessionStatus, TopicSession, utc_now_iso
 
-DEFAULT_CF_ACCOUNT_ID = "f073aa10866fbb6c4f213d62bee54acb"
-DEFAULT_CF_D1_DATABASE_ID = "74d3d401-b084-41bd-9f13-0be9a62e56ea"
+DEFAULT_GATEWAY_URL = "https://mailuo-api.lipeng-sh.workers.dev"
+AUTH_CONFIG_PATH = Path("~/.mailuo/auth.json").expanduser()
+USER_ID_PLACEHOLDER = "__CURRENT_USER_ID__"
 
 
 def tokenize(text: str) -> list[str]:
@@ -45,70 +45,137 @@ def cosine_similarity(vec_a: list[float], vec_b: list[float]) -> float:
     return dot / (norm_a * norm_b)
 
 
-def resolve_cloudflare_credentials() -> tuple[Optional[str], str, str]:
-    """自动解析 Cloudflare API Token / Wrangler OAuth Token、Account ID 与 D1 Database ID."""
-    token = os.getenv("CLOUDFLARE_API_TOKEN") or os.getenv("CF_API_TOKEN")
-    account_id = os.getenv("CLOUDFLARE_ACCOUNT_ID") or DEFAULT_CF_ACCOUNT_ID
-    database_id = os.getenv("MAILUO_D1_DATABASE_ID") or DEFAULT_CF_D1_DATABASE_ID
-
-    if not token:
-        wrangler_candidates = [
-            Path.home() / "Library" / "Preferences" / ".wrangler" / "config" / "default.toml",
-            Path.home() / ".config" / ".wrangler" / "config" / "default.toml",
-            Path.home() / ".wrangler" / "config" / "default.toml",
-        ]
-        for cfg_path in wrangler_candidates:
-            if cfg_path.exists():
-                try:
-                    raw = cfg_path.read_text(encoding="utf-8")
-                    m = re.search(r'oauth_token\s*=\s*"([^"]+)"', raw)
-                    if m:
-                        token = m.group(1)
-                        break
-                except Exception:
-                    continue
-
-    return token, account_id, database_id
+# ------------------------------------------------------------------
+# 用户注册、登录与本地凭证管理 (`~/.mailuo/auth.json`)
+# ------------------------------------------------------------------
+def load_auth_profile(config_path: Path = AUTH_CONFIG_PATH) -> Optional[dict[str, Any]]:
+    if not config_path.exists():
+        return None
+    try:
+        data = json.loads(config_path.read_text(encoding="utf-8"))
+        if data.get("token") and data.get("username"):
+            return data
+    except Exception:
+        pass
+    return None
 
 
-class CloudflareD1Client:
-    """轻量级 Cloudflare D1 HTTP SQL 客户端."""
+def save_auth_profile(profile: dict[str, Any], config_path: Path = AUTH_CONFIG_PATH) -> None:
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(json.dumps(profile, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    def __init__(self, token: str, account_id: str, database_id: str) -> None:
+
+def clear_auth_profile(config_path: Path = AUTH_CONFIG_PATH) -> None:
+    if config_path.exists():
+        config_path.unlink()
+
+
+def _gateway_post(
+    path: str,
+    payload: dict[str, Any],
+    token: Optional[str] = None,
+    gateway_url: Optional[str] = None,
+) -> dict[str, Any]:
+    base = (gateway_url or os.getenv("MAILUO_GATEWAY_URL") or DEFAULT_GATEWAY_URL).rstrip("/")
+    url = f"{base}{path}"
+    headers = {
+        "Content-Type": "application/json",
+        "User-Agent": "mailuo-cli/0.2.0",
+    }
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers=headers,
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        raw_err = e.read().decode("utf-8", errors="ignore")
+        try:
+            err_json = json.loads(raw_err)
+            raise RuntimeError(err_json.get("error") or f"HTTP {e.code}") from e
+        except json.JSONDecodeError:
+            raise RuntimeError(f"HTTP {e.code}: {raw_err}") from e
+
+
+def register_user(
+    username: str,
+    password: str,
+    gateway_url: Optional[str] = None,
+    config_path: Path = AUTH_CONFIG_PATH,
+) -> dict[str, Any]:
+    """在 Cloudflare D1 云端注册新用户并保存登录凭证到本机."""
+    res = _gateway_post(
+        "/auth/register",
+        {"username": username, "password": password},
+        gateway_url=gateway_url,
+    )
+    if not res.get("ok"):
+        raise RuntimeError(res.get("error") or "注册失败")
+    profile = {
+        "user_id": res["user_id"],
+        "username": res["username"],
+        "token": res["token"],
+        "gateway_url": gateway_url or os.getenv("MAILUO_GATEWAY_URL") or DEFAULT_GATEWAY_URL,
+    }
+    save_auth_profile(profile, config_path=config_path)
+    return profile
+
+
+def login_user(
+    username: str,
+    password: str,
+    gateway_url: Optional[str] = None,
+    config_path: Path = AUTH_CONFIG_PATH,
+) -> dict[str, Any]:
+    """登录已有账号并保存凭证到本机."""
+    res = _gateway_post(
+        "/auth/login",
+        {"username": username, "password": password},
+        gateway_url=gateway_url,
+    )
+    if not res.get("ok"):
+        raise RuntimeError(res.get("error") or "登录失败")
+    profile = {
+        "user_id": res["user_id"],
+        "username": res["username"],
+        "token": res["token"],
+        "gateway_url": gateway_url or os.getenv("MAILUO_GATEWAY_URL") or DEFAULT_GATEWAY_URL,
+    }
+    save_auth_profile(profile, config_path=config_path)
+    return profile
+
+
+class CloudflareGatewayClient:
+    """多租户 Cloudflare Worker D1 客户端（自动携带当前登录用户的 Token，数据按 user_id 隔离）."""
+
+    def __init__(self, token: str, username: str, user_id: str, gateway_url: str = DEFAULT_GATEWAY_URL) -> None:
         self.token = token
-        self.account_id = account_id
-        self.database_id = database_id
-        self.endpoint = (
-            f"https://api.cloudflare.com/client/v4/accounts/{account_id}"
-            f"/d1/database/{database_id}/query"
-        )
+        self.username = username
+        self.user_id = user_id
+        self.gateway_url = gateway_url.rstrip("/")
 
     def execute(self, sql: str, params: Optional[Sequence[Any]] = None) -> list[dict[str, Any]]:
-        payload: dict[str, Any] = {"sql": sql}
-        if params is not None:
-            payload["params"] = list(params)
-        req = urllib.request.Request(
-            self.endpoint,
-            data=json.dumps(payload).encode("utf-8"),
-            headers={
-                "Authorization": f"Bearer {self.token}",
-                "Content-Type": "application/json",
-            },
-            method="POST",
+        res = _gateway_post(
+            "/d1/query",
+            {"sql": sql, "params": list(params) if params is not None else []},
+            token=self.token,
+            gateway_url=self.gateway_url,
         )
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            body = json.loads(resp.read().decode("utf-8"))
-        if not body.get("success"):
-            raise RuntimeError(f"Cloudflare D1 Error: {body.get('errors')}")
-        result_list = body.get("result") or []
-        if not result_list:
-            return []
-        return result_list[0].get("results") or []
+        if not res.get("ok"):
+            raise RuntimeError(res.get("error") or "Cloudflare D1 查询失败")
+        return res.get("results") or []
 
 
-SCHEMA_SQL = """
-CREATE TABLE IF NOT EXISTS core_themes (
+LOCAL_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS tenant_core_themes (
     id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
     name TEXT NOT NULL,
     description TEXT NOT NULL DEFAULT '',
     consolidated_insight TEXT NOT NULL DEFAULT '',
@@ -117,8 +184,9 @@ CREATE TABLE IF NOT EXISTS core_themes (
     updated_at TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS topic_sessions (
+CREATE TABLE IF NOT EXISTS tenant_topic_sessions (
     id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
     title TEXT NOT NULL,
     tags_json TEXT NOT NULL DEFAULT '[]',
     theme_id TEXT,
@@ -133,8 +201,9 @@ CREATE TABLE IF NOT EXISTS topic_sessions (
     updated_at TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS messages (
+CREATE TABLE IF NOT EXISTS tenant_messages (
     id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
     session_id TEXT NOT NULL,
     role TEXT NOT NULL,
     content TEXT NOT NULL,
@@ -144,60 +213,72 @@ CREATE TABLE IF NOT EXISTS messages (
     created_at TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS app_state (
-    key TEXT PRIMARY KEY,
-    value TEXT NOT NULL
+CREATE TABLE IF NOT EXISTS tenant_app_state (
+    user_id TEXT NOT NULL,
+    key TEXT NOT NULL,
+    value TEXT NOT NULL,
+    PRIMARY KEY (user_id, key)
 );
 """
 
 
 class MailuoStorage:
-    """持久化存储层：默认直接保存在 Cloudflare D1 (`mailuo-db`)，测试或指定路径时可使用本地 SQLite."""
+    """支持多用户隔离 (`user_id`) 的持久化存储层：
+    - 当 `db_path="d1"` 时：通过已登录用户的 Token 连接 Cloudflare Worker 网关，存入 Cloudflare D1 对应 `user_id` 名下。
+    - 当指定本地 SQLite 路径时（如单元测试或离线模式）：同样按 `user_id` 隔离存储。
+    """
 
-    def __init__(self, db_path: str | Path = "d1") -> None:
+    def __init__(
+        self,
+        db_path: str | Path = "d1",
+        user_id: Optional[str] = None,
+    ) -> None:
         self.backend_mode = "sqlite"
-        self._d1: Optional[CloudflareD1Client] = None
+        self._cloud: Optional[CloudflareGatewayClient] = None
         self._conn: Optional[sqlite3.Connection] = None
+        self.user_id = user_id or "local_user"
+        self.username = self.user_id
 
-        # 当 db_path 为 "d1" (默认) 时，优先连接 Cloudflare D1
         if str(db_path) == "d1":
-            token, acc_id, db_id = resolve_cloudflare_credentials()
-            if token:
-                try:
-                    d1_client = CloudflareD1Client(token=token, account_id=acc_id, database_id=db_id)
-                    d1_client.execute(SCHEMA_SQL)
-                    self._d1 = d1_client
-                    self.backend_mode = "cloudflare-d1"
-                    self.db_label = f"Cloudflare D1 (mailuo-db: {db_id})"
-                    return
-                except Exception:
-                    pass
+            profile = load_auth_profile()
+            if profile and profile.get("token"):
+                self.user_id = profile["user_id"]
+                self.username = profile["username"]
+                gw = profile.get("gateway_url") or DEFAULT_GATEWAY_URL
+                self._cloud = CloudflareGatewayClient(
+                    token=profile["token"],
+                    username=self.username,
+                    user_id=self.user_id,
+                    gateway_url=gw,
+                )
+                self.backend_mode = "cloudflare-d1"
+                self.db_label = f"Cloudflare D1 (用户: {self.username})"
+                return
             db_path = "~/.mailuo/mailuo.db"
 
         self.db_path = Path(db_path).expanduser().resolve()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self.db_label = f"SQLite ({self.db_path})"
+        self.db_label = f"SQLite ({self.db_path.name} | 用户: {self.username})"
         self._conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._init_sqlite_schema()
 
+    @property
+    def is_authenticated_cloud(self) -> bool:
+        return self._cloud is not None
+
     def _init_sqlite_schema(self) -> None:
         assert self._conn is not None
         cur = self._conn.cursor()
-        cur.executescript(SCHEMA_SQL)
-        for alter_sql in (
-            "ALTER TABLE topic_sessions ADD COLUMN external_sessions_json TEXT NOT NULL DEFAULT '{}'",
-            "ALTER TABLE messages ADD COLUMN agent_source TEXT NOT NULL DEFAULT 'mailuo'",
-        ):
-            try:
-                cur.execute(alter_sql)
-            except sqlite3.OperationalError:
-                pass
+        cur.executescript(LOCAL_SCHEMA_SQL)
         self._conn.commit()
 
+    def _uid_param(self) -> str:
+        return USER_ID_PLACEHOLDER if self._cloud is not None else self.user_id
+
     def _query(self, sql: str, params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
-        if self._d1 is not None:
-            return self._d1.execute(sql, params)
+        if self._cloud is not None:
+            return self._cloud.execute(sql, params)
         assert self._conn is not None
         cur = self._conn.execute(sql, params)
         rows = cur.fetchall()
@@ -205,34 +286,37 @@ class MailuoStorage:
         return [dict(r) for r in rows]
 
     # ------------------------------------------------------------------
-    # Active Session Pointer
+    # Active Session Pointer (Per User)
     # ------------------------------------------------------------------
     def get_active_session_id(self) -> Optional[str]:
-        rows = self._query("SELECT value FROM app_state WHERE key = 'active_session_id'")
+        rows = self._query(
+            "SELECT value FROM tenant_app_state WHERE user_id = ? AND key = 'active_session_id'",
+            (self._uid_param(),),
+        )
         return rows[0]["value"] if rows and rows[0].get("value") else None
 
     def set_active_session_id(self, session_id: Optional[str]) -> None:
         val = session_id or ""
         self._query(
             """
-            INSERT INTO app_state (key, value) VALUES ('active_session_id', ?)
-            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            INSERT INTO tenant_app_state (user_id, key, value) VALUES (?, 'active_session_id', ?)
+            ON CONFLICT(user_id, key) DO UPDATE SET value = excluded.value
             """,
-            (val,),
+            (self._uid_param(), val),
         )
 
     # ------------------------------------------------------------------
-    # TopicSession CRUD
+    # TopicSession CRUD (Isolated by user_id)
     # ------------------------------------------------------------------
     def save_session(self, session: TopicSession) -> TopicSession:
         session.updated_at = utc_now_iso()
         self._query(
             """
-            INSERT INTO topic_sessions (
-                id, title, tags_json, theme_id, parent_session_id, status,
+            INSERT INTO tenant_topic_sessions (
+                id, user_id, title, tags_json, theme_id, parent_session_id, status,
                 summary, key_decisions_json, open_questions_json, external_sessions_json,
                 embedding_json, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 title = excluded.title,
                 tags_json = excluded.tags_json,
@@ -243,11 +327,13 @@ class MailuoStorage:
                 key_decisions_json = excluded.key_decisions_json,
                 open_questions_json = excluded.open_questions_json,
                 external_sessions_json = excluded.external_sessions_json,
-                embedding_json = COALESCE(excluded.embedding_json, topic_sessions.embedding_json),
+                embedding_json = COALESCE(excluded.embedding_json, tenant_topic_sessions.embedding_json),
                 updated_at = excluded.updated_at
+            WHERE tenant_topic_sessions.user_id = excluded.user_id
             """,
             (
                 session.id,
+                self._uid_param(),
                 session.title,
                 json.dumps(session.tags, ensure_ascii=False),
                 session.theme_id,
@@ -265,14 +351,17 @@ class MailuoStorage:
         return session
 
     def get_session(self, session_id: str) -> Optional[TopicSession]:
-        rows = self._query("SELECT * FROM topic_sessions WHERE id = ?", (session_id,))
+        rows = self._query(
+            "SELECT * FROM tenant_topic_sessions WHERE id = ? AND user_id = ?",
+            (session_id, self._uid_param()),
+        )
         return self._row_to_session(rows[0]) if rows else None
 
     def list_sessions(
         self, include_merged: bool = False, theme_id: Optional[str] = None
     ) -> list[TopicSession]:
-        query = "SELECT * FROM topic_sessions WHERE 1=1"
-        params: list[Any] = []
+        query = "SELECT * FROM tenant_topic_sessions WHERE user_id = ?"
+        params: list[Any] = [self._uid_param()]
         if not include_merged:
             query += " AND status != ?"
             params.append(SessionStatus.MERGED.value)
@@ -303,16 +392,18 @@ class MailuoStorage:
         )
 
     # ------------------------------------------------------------------
-    # Message CRUD
+    # Message CRUD (Isolated by user_id)
     # ------------------------------------------------------------------
     def add_message(self, msg: MessageRecord) -> MessageRecord:
         self._query(
             """
-            INSERT INTO messages (id, session_id, role, content, agent_source, is_ephemeral, metadata_json, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO tenant_messages (
+                id, user_id, session_id, role, content, agent_source, is_ephemeral, metadata_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 msg.id,
+                self._uid_param(),
                 msg.session_id,
                 msg.role,
                 msg.content,
@@ -324,8 +415,8 @@ class MailuoStorage:
         )
         if not msg.is_ephemeral:
             self._query(
-                "UPDATE topic_sessions SET updated_at = ? WHERE id = ?",
-                (utc_now_iso(), msg.session_id),
+                "UPDATE tenant_topic_sessions SET updated_at = ? WHERE id = ? AND user_id = ?",
+                (utc_now_iso(), msg.session_id, self._uid_param()),
             )
         return msg
 
@@ -335,8 +426,8 @@ class MailuoStorage:
         include_ephemeral: bool = False,
         limit: Optional[int] = None,
     ) -> list[MessageRecord]:
-        query = "SELECT * FROM messages WHERE session_id = ?"
-        params: list[Any] = [session_id]
+        query = "SELECT * FROM tenant_messages WHERE session_id = ? AND user_id = ?"
+        params: list[Any] = [session_id, self._uid_param()]
         if not include_ephemeral:
             query += " AND is_ephemeral = 0"
         query += " ORDER BY created_at ASC"
@@ -359,24 +450,26 @@ class MailuoStorage:
         return msgs
 
     # ------------------------------------------------------------------
-    # CoreTheme CRUD
+    # CoreTheme CRUD (Isolated by user_id)
     # ------------------------------------------------------------------
     def save_theme(self, theme: CoreTheme) -> CoreTheme:
         theme.updated_at = utc_now_iso()
         self._query(
             """
-            INSERT INTO core_themes (
-                id, name, description, consolidated_insight, session_ids_json, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO tenant_core_themes (
+                id, user_id, name, description, consolidated_insight, session_ids_json, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 name = excluded.name,
                 description = excluded.description,
                 consolidated_insight = excluded.consolidated_insight,
                 session_ids_json = excluded.session_ids_json,
                 updated_at = excluded.updated_at
+            WHERE tenant_core_themes.user_id = excluded.user_id
             """,
             (
                 theme.id,
+                self._uid_param(),
                 theme.name,
                 theme.description,
                 theme.consolidated_insight,
@@ -388,7 +481,10 @@ class MailuoStorage:
         return theme
 
     def list_themes(self) -> list[CoreTheme]:
-        rows = self._query("SELECT * FROM core_themes ORDER BY updated_at DESC")
+        rows = self._query(
+            "SELECT * FROM tenant_core_themes WHERE user_id = ? ORDER BY updated_at DESC",
+            (self._uid_param(),),
+        )
         return [
             CoreTheme(
                 id=r["id"],
@@ -403,7 +499,10 @@ class MailuoStorage:
         ]
 
     def get_theme(self, theme_id: str) -> Optional[CoreTheme]:
-        rows = self._query("SELECT * FROM core_themes WHERE id = ?", (theme_id,))
+        rows = self._query(
+            "SELECT * FROM tenant_core_themes WHERE id = ? AND user_id = ?",
+            (theme_id, self._uid_param()),
+        )
         if not rows:
             return None
         r = rows[0]
@@ -418,8 +517,8 @@ class MailuoStorage:
         )
 
     def clear_themes(self) -> None:
-        self._query("DELETE FROM core_themes")
-        self._query("UPDATE topic_sessions SET theme_id = NULL")
+        self._query("DELETE FROM tenant_core_themes WHERE user_id = ?", (self._uid_param(),))
+        self._query("UPDATE tenant_topic_sessions SET theme_id = NULL WHERE user_id = ?", (self._uid_param(),))
 
     # ------------------------------------------------------------------
     # Hybrid Search (BM25-like Lexical + Embedding Cosine)
@@ -431,7 +530,7 @@ class MailuoStorage:
         top_k: int = 5,
         exclude_session_id: Optional[str] = None,
     ) -> list[tuple[TopicSession, float]]:
-        """根据自然语言描述检索历史 TopicSession（支持『把上次讨论 XX 的话题调出来』）."""
+        """根据自然语言描述在当前用户名下检索历史 TopicSession."""
         sessions = self.list_sessions(include_merged=False)
         if exclude_session_id:
             sessions = [s for s in sessions if s.id != exclude_session_id]

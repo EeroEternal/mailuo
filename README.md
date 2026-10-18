@@ -1,18 +1,44 @@
-# Mailuo (脉络 `mai`) — 基于 Cloudflare D1 的跨 Agent (`pi.dev` / `Google agy`) 脉络与核心主题管理
+# Mailuo (脉络 `mai`) — 支持多用户注册隔离、跨机器同步与多 Agent (`pi.dev` / `Google agy`) 的脉络管理系统
 
-> 解决跟多个 Agent 对话时“单窗口穿插杂事导致上下文混乱”、“多窗口/跨工具碎片化找不到历史讨论”的核心痛点。所有数据默认实时同步保存在 **Cloudflare D1 (`mailuo-db`)**。
+> 解决跟多个 Agent 对话时“单窗口穿插杂事导致上下文混乱”、“多窗口/跨机器碎片化找不到历史讨论”的核心痛点。
 
-## 1. 安装 (`pip install`)
+## 1. 任意机器一键安装 (`pip install`)
+
+在其他任何机器的 Python 环境中，直接通过 GitHub 仓库一键安装：
 
 ```bash
-pip install -e .
-# 或者直接通过 git 安装:
-# pip install git+https://github.com/EeroEternal/mailuo.git
+pip install git+https://github.com/EeroEternal/mailuo.git
+# 或者克隆仓库后本地安装:
+# pip install .
 ```
 
-安装后即可在任意终端直接使用极简命令 **`mai`**。
+*(无需在其他机器上安装 Node.js / Wrangler 或配置 Cloudflare 密钥，客户端会自动连接已部署的 Cloudflare Worker 多租户网关 `https://mailuo-api.lipeng-sh.workers.dev` 并将数据加密隔离保存在 Cloudflare D1 `mailuo-db` 中。)*
 
-## 2. 极简 `mai` 用法
+---
+
+## 2. 账号注册与多机器登录（每个人的数据严格隔离、绝不串号）
+
+第一次在某台机器上使用 `mai` 时，会自动引导你注册或登录（也可以显式执行命令）：
+
+```bash
+# 1) 注册属于你自己的账号（自动登录并生成本地凭证 ~/.mailuo/auth.json）
+mai register <用户名> <密码>
+# 或者交互式输入密码（不回显）：
+mai register
+
+# 2) 在另一台电脑上登录同一个账号，立即无缝接续所有历史脉络
+mai login <用户名> <密码>
+
+# 3) 查看当前登录的是谁
+mai whoami
+
+# 4) 退出当前机器的账号
+mai logout
+```
+
+---
+
+## 3. 极简日常用法 (`mai`)
 
 ```bash
 # 1) 直接对话（自动路由：延续话题 / 穿插提问隔离 / 调出旧话题 / 整理核心主题）
@@ -25,21 +51,15 @@ mai "顺便问一下，帮我写个匹配邮箱的正则"
 mai "上次我们讨论的那个 Cloudflare D1 架构的话题调出来"
 
 # 4) 在当前话题脉络下直接拉起 pi.dev 或 Google agy
-mai pi                       # 直接进入 pi.dev 交互式 TUI（自动绑定当前话题的 --session-id，退出后自动记录到 Cloudflare D1）
+mai pi                       # 直接进入 pi.dev 交互式 TUI（自动绑定当前话题的 --session-id，退出后自动同步记录到你的云端账号）
 mai pi "帮我分析一下这段代码" # 用 pi.dev 单次回答并记录到当前话题
 mai agy                      # 直接进入 Google Antigravity (agy) 交互式界面
 
-# 5) 查看 Cloudflare D1 中的所有具体话题与整理核心主题
-mai ls                       # 查看所有 Topic Sessions
-mai themes                   # 把所有零散 Session 自动整理成与你相关的『最核心主题』
-mai sync                     # 将本机 ~/.pi/agent/sessions 和 ~/.gemini/antigravity-cli/brain 同步至 Cloudflare D1
+# 5) 查看你账号下的所有具体话题与整理核心主题
+mai ls                       # 查看当前账号下的所有 Topic Sessions
+mai themes                   # 把当前账号下的零散 Session 自动整理成『最核心主题』
+mai sync                     # 将当前机器上的 ~/.pi/agent/sessions 和 ~/.gemini/antigravity-cli/brain 同步至你的云端账号
 
 # 6) 进入交互式控制台
 mai
 ```
-
-## 3. Cloudflare D1 存储说明
-
-- **数据库名称**：`mailuo-db`
-- **Database ID**：`74d3d401-b084-41bd-9f13-0be9a62e56ea`
-- **认证机制**：[`MailuoStorage`](file:///Users/xinference/github/mailuo/src/mailuo/storage.py) 会自动读取本机 `wrangler` 登录凭证（或环境变量 `CLOUDFLARE_API_TOKEN`），无需手动配置即可直连 Cloudflare D1；在离线环境下会自动回退至本地 `~/.mailuo/mailuo.db`。

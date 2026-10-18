@@ -45,11 +45,12 @@ class MailuoEngine:
     def __init__(
         self,
         db_path: str | Path = "d1",
+        user_id: Optional[str] = None,
         llm: Optional[LLMBackend] = None,
         pi_bridge: Optional[PiDevBridge] = None,
         agy_bridge: Optional[GoogleAgyBridge] = None,
     ) -> None:
-        self.storage = MailuoStorage(db_path=db_path)
+        self.storage = MailuoStorage(db_path=db_path, user_id=user_id)
         self.llm = llm or LLMBackend()
         self.pi_bridge = pi_bridge or PiDevBridge()
         self.agy_bridge = agy_bridge or GoogleAgyBridge()

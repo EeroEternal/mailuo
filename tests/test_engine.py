@@ -172,3 +172,31 @@ def test_pi_and_agy_bridges_command_and_transcript_sync(tmp_path: Path) -> None:
         is_tangent=False,
     )
     assert any("【Mailuo 脉络上下文】" in arg for arg in agy_cmd)
+
+
+def test_multi_user_tenant_isolation(tmp_path: Path) -> None:
+    """验证多用户注册后，不同用户的数据在同一数据库中严格按 user_id 隔离，绝不串号."""
+    shared_db = tmp_path / "shared_tenant.db"
+    engine_alice = MailuoEngine(db_path=shared_db, user_id="usr_alice")
+    engine_bob = MailuoEngine(db_path=shared_db, user_id="usr_bob")
+
+    # Alice 创建自己的话题
+    res_alice = engine_alice.chat("我是 Alice，我在研究基于 Rust 的高频交易引擎。")
+    assert res_alice.active_session is not None
+    alice_sess_id = res_alice.active_session.id
+
+    # Bob 创建自己的话题
+    res_bob = engine_bob.chat("我是 Bob，我在设计 Kubernetes 集群自动扩缩容方案。")
+    assert res_bob.active_session is not None
+    bob_sess_id = res_bob.active_session.id
+
+    # 验证 Alice 只能看到自己的 Session，看不到 Bob 的
+    alice_sessions = engine_alice.storage.list_sessions()
+    assert [s.id for s in alice_sessions] == [alice_sess_id]
+    assert engine_alice.storage.get_session(bob_sess_id) is None
+
+    # 验证 Bob 只能看到自己的 Session，看不到 Alice 的
+    bob_sessions = engine_bob.storage.list_sessions()
+    assert [s.id for s in bob_sessions] == [bob_sess_id]
+    assert engine_bob.storage.get_session(alice_sess_id) is None
+
