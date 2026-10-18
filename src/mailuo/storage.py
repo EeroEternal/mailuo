@@ -357,6 +357,18 @@ class MailuoStorage:
         )
         return self._row_to_session(rows[0]) if rows else None
 
+    def delete_session(self, session_id: str) -> None:
+        self._query(
+            "DELETE FROM tenant_messages WHERE session_id = ? AND user_id = ?",
+            (session_id, self._uid_param()),
+        )
+        self._query(
+            "DELETE FROM tenant_topic_sessions WHERE id = ? AND user_id = ?",
+            (session_id, self._uid_param()),
+        )
+        if self.get_active_session_id() == session_id:
+            self.set_active_session_id(None)
+
     def list_sessions(
         self, include_merged: bool = False, theme_id: Optional[str] = None
     ) -> list[TopicSession]:

@@ -292,6 +292,16 @@ class MailuoEngine:
         active_sess = self.get_active_session()
         is_placeholder = False
 
+        # 自动清理旧版本遗留的伪造话题（如 "Google agy 专题讨论" / "pi.dev 专题讨论"）
+        if active_sess is not None and active_sess.title in (
+            "Google agy 专题讨论",
+            "pi.dev 专题讨论",
+            "agy 专题讨论",
+            "pi 专题讨论",
+        ):
+            self.storage.delete_session(active_sess.id)
+            active_sess = None
+
         if active_sess is None:
             is_placeholder = True
             active_sess = TopicSession(

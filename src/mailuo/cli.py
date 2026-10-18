@@ -371,6 +371,21 @@ def main() -> None:
         print_sessions_table(engine)
         return
 
+    if cmd in ("rm", "del", "delete") and rest:
+        engine.storage.delete_session(rest)
+        console.print(f"[bold yellow]🗑️ 已删除话题 Session: {rest}[/bold yellow]")
+        print_sessions_table(engine)
+        return
+
+    if cmd in ("new", "--new"):
+        if rest:
+            res = engine.chat(rest, force_new_topic=True)
+            render_turn(f"mai new {rest}", res, engine.storage.db_label)
+        else:
+            engine.storage.set_active_session_id(None)
+            console.print("[bold green]🌱 已重置当前激活指针，下一次对话或拉起 `mai pi` / `mai agy` 将开启全新话题！[/bold green]")
+        return
+
     if cmd in ("themes", "theme", "--themes"):
         res = engine.chat("请把这些 session 整理成跟我有关的最核心主题")
         render_turn("mai themes", res, engine.storage.db_label)
