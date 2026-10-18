@@ -44,7 +44,7 @@ class MailuoEngine:
 
     def __init__(
         self,
-        db_path: str | Path = "~/.mailuo/mailuo.db",
+        db_path: str | Path = "d1",
         llm: Optional[LLMBackend] = None,
         pi_bridge: Optional[PiDevBridge] = None,
         agy_bridge: Optional[GoogleAgyBridge] = None,
