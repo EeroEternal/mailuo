@@ -382,36 +382,63 @@ JSON 格式:
             except Exception:
                 pass
 
-        # 本地启发式提炼：提取用户的关键陈述与问题
-        user_msgs = [m.content.strip() for m in clean_msgs if m.role == "user"]
-        latest_user = user_msgs[-1] if user_msgs else ""
+        # 深度分析完整对话流（结合用户核心诉求 + Agent 最终沉淀的技术方案/结论/PR/根因分析）
+        user_msgs = [self._strip_file_paths(m.content) for m in clean_msgs if m.role == "user"]
+        user_msgs = [u for u in user_msgs if u]
+        asst_msgs = [m.content.strip() for m in clean_msgs if m.role == "assistant" and m.content.strip()]
 
-        # 识别决策性语句或核心要点
-        if any(
-            kw in latest_user
-            for kw in ["决定", "采用", "确定", "选定", "方案是", "用", "架构", "设计", "目标", "核心"]
-        ):
-            snippet = latest_user[:80]
-            if snippet not in session.key_decisions:
-                session.key_decisions.append(snippet)
-                session.key_decisions = session.key_decisions[-5:]
+        # 1. 从 Agent 最终回复和用户确认中提炼真正的技术决策与交付结论 (key_decisions)
+        extracted_decisions: list[str] = []
+        for am in asst_msgs[-4:]:
+            # 提取 PR / Commit / 版本发布信息
+            pr_matches = re.findall(r"(?:PR\s*#\d+|pull/\d+|v\d+\.\d+\.\d+|[0-9a-f]{7}\b)[^\n。；*]*", am)
+            for pm in pr_matches[:2]:
+                clean_pm = self._strip_file_paths(pm).strip(" -*•:：`")
+                if len(clean_pm) >= 8 and clean_pm not in extracted_decisions:
+                    extracted_decisions.append(clean_pm[:90])
 
-        # 识别待办或疑问
-        if "？" in latest_user or "?" in latest_user or any(
-            kw in latest_user for kw in ["怎么", "如何", "是不是", "待定", "下一步"]
-        ):
-            q_snippet = latest_user[:80]
-            if q_snippet not in session.open_questions:
-                session.open_questions.append(q_snippet)
-                session.open_questions = session.open_questions[-4:]
+            # 提取 Markdown 要点行或核心结论句
+            for line in am.splitlines():
+                sline = line.strip()
+                if re.match(r"^(?:[-*•]|\d+\.)\s+\*\*.*?\*\*", sline) or any(
+                    kw in sline for kw in ["核心原因", "根本原因", "核心结论", "已合入", "已推到", "已完成", "定位："]
+                ):
+                    cleaned_line = re.sub(r"[*`#>]", "", self._strip_file_paths(sline)).strip(" -•:")
+                    if 10 <= len(cleaned_line) <= 110 and cleaned_line not in extracted_decisions:
+                        extracted_decisions.append(cleaned_line)
 
-        # 生成精炼摘要
-        first_point = user_msgs[0][:50] if user_msgs else session.title
-        latest_point = latest_user[:60] if len(user_msgs) > 1 else ""
-        if latest_point and latest_point != first_point:
-            session.summary = f"围绕《{session.title}》展开讨论；最初探讨「{first_point}」，最新进展至「{latest_point}」（共 {len(user_msgs)} 轮有效交锋）。"
-        else:
-            session.summary = f"围绕《{session.title}》展开讨论，核心关注「{first_point}」。"
+        for um in user_msgs:
+            if any(kw in um for kw in ["决定", "采用", "确定", "方案是", "定位", "用 rust", "对标"]):
+                snippet = um[:85]
+                if snippet not in extracted_decisions:
+                    extracted_decisions.append(snippet)
+
+        if extracted_decisions:
+            session.key_decisions = list(dict.fromkeys(session.key_decisions + extracted_decisions))[-5:]
+
+        # 2. 提取待推进问题或后续动作 (open_questions)
+        for um in user_msgs[-3:]:
+            if "？" in um or "?" in um or any(kw in um for kw in ["怎么", "如何", "是不是", "下一步", "全量ci"]):
+                if len(um) >= 6 and um[:80] not in session.open_questions:
+                    session.open_questions.append(um[:80])
+                    session.open_questions = session.open_questions[-4:]
+
+        # 3. 合成高信息密度的技术脉络摘要 (summary)
+        meaningful_users = [
+            u for u in user_msgs
+            if len(u) >= 5 and not re.match(r"^(提交代码|获取最新|查看最新|能找到|你能找到|不要用)", u)
+        ]
+        core_topic_req = meaningful_users[0][:65] if meaningful_users else (user_msgs[0][:65] if user_msgs else session.title)
+        outcome_note = ""
+        if session.key_decisions:
+            outcome_note = f"；关键产出与结论：{session.key_decisions[-1][:75]}"
+        elif asst_msgs:
+            last_asst_clean = re.sub(r"[*`#>]", "", self._strip_file_paths(asst_msgs[-1]))
+            first_asst_sentence = re.split(r"[。\n]", last_asst_clean)[0].strip()
+            if first_asst_sentence:
+                outcome_note = f"；最终进展：{first_asst_sentence[:75]}"
+
+        session.summary = f"探讨焦点：「{core_topic_req}」{outcome_note}（共 {len(user_msgs)} 轮交锋）。"
 
         session.embedding = self.embed(
             f"{session.title} {' '.join(session.tags)} {session.summary} {' '.join(session.key_decisions)}"
