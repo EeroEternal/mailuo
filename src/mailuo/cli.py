@@ -1,14 +1,14 @@
-"""Simplified Command-Line Interface for Mailuo (脉络 — Cloudflare D1 云端存储 + 极简 CLI).
+"""Simplified Command-Line Interface for Mailuo (脉络 `mai` — Cloudflare D1 云端存储 + 极简 CLI).
 
 极简命令用法：
-  mailuo                     # 进入交互式对话（默认直连 Cloudflare D1）
-  mailuo "一句话或问题"      # 直接对话（自动判断延续话题 / 临时穿插隔离 / 调出旧话题 / 整理核心主题）
-  mailuo pi [提示词]         # 在当前话题脉络下拉起 pi.dev (退出后自动同步记录到 Cloudflare D1)
-  mailuo agy [提示词]        # 在当前话题脉络下拉起 Google Antigravity (`agy`)
-  mailuo ls                  # 查看所有话题 Sessions 列表
-  mailuo themes              # 一键把所有零散 Session 整理为核心主题 (Core Themes)
-  mailuo sync                # 一键把本机 pi.dev 和 agy 的历史记录同步到 Cloudflare D1
-  mailuo demo                # 运行完整演示
+  mai                     # 进入交互式对话（默认直连 Cloudflare D1）
+  mai "一句话或问题"      # 直接对话（自动判断延续话题 / 临时穿插隔离 / 调出旧话题 / 整理核心主题）
+  mai pi [提示词]         # 在当前话题脉络下拉起 pi.dev (退出后自动同步记录到 Cloudflare D1)
+  mai agy [提示词]        # 在当前话题脉络下拉起 Google Antigravity (`agy`)
+  mai ls                  # 查看所有话题 Sessions 列表
+  mai themes              # 一键把所有零散 Session 整理为核心主题 (Core Themes)
+  mai sync                # 一键把本机 pi.dev 和 agy 的历史记录同步到 Cloudflare D1
+  mai demo                # 运行完整演示
 """
 
 from __future__ import annotations
@@ -205,17 +205,17 @@ def run_repl(engine: MailuoEngine) -> None:
         render_turn(text, res, engine.storage.db_label)
 
 
-HELP_TEXT = """[bold cyan]Mailuo (脉络) — 极简 CLI (数据默认实时保存至 Cloudflare D1)[/bold cyan]
+HELP_TEXT = """[bold cyan]mai (脉络 Mailuo) — 极简 CLI (数据默认实时保存至 Cloudflare D1)[/bold cyan]
 
 用法:
-  [bold green]mailuo[/bold green]                       启动交互式对话
-  [bold green]mailuo "<任意对话内容>"[/bold green]      直接发送一句话（自动路由/穿插隔离/调出历史话题/整理主题）
-  [bold green]mailuo pi [提问内容][/bold green]         在当前脉络下拉起 [bold]pi.dev[/bold]（不带内容则进入 pi 交互式 TUI）
-  [bold green]mailuo agy [提问内容][/bold green]        在当前脉络下拉起 [bold]Google agy[/bold]（不带内容则进入 agy 交互式界面）
-  [bold green]mailuo ls[/bold green]                    查看 Cloudflare D1 中的所有具体话题 Sessions
-  [bold green]mailuo themes[/bold green]                把所有零散 Session 自动整理成与你相关的『最核心主题』
-  [bold green]mailuo sync[/bold green]                  将本机 pi.dev 和 agy 的历史记录一键同步至 Cloudflare D1
-  [bold green]mailuo demo[/bold green]                  运行自动化演示
+  [bold green]mai[/bold green]                       启动交互式对话
+  [bold green]mai "<任意对话内容>"[/bold green]      直接发送一句话（自动路由/穿插隔离/调出历史话题/整理主题）
+  [bold green]mai pi [提问内容][/bold green]         在当前脉络下拉起 [bold]pi.dev[/bold]（不带内容则进入 pi 交互式 TUI）
+  [bold green]mai agy [提问内容][/bold green]        在当前脉络下拉起 [bold]Google agy[/bold]（不带内容则进入 agy 交互式界面）
+  [bold green]mai ls[/bold green]                    查看 Cloudflare D1 中的所有具体话题 Sessions
+  [bold green]mai themes[/bold green]                把所有零散 Session 自动整理成与你相关的『最核心主题』
+  [bold green]mai sync[/bold green]                  将本机 pi.dev 和 agy 的历史记录一键同步至 Cloudflare D1
+  [bold green]mai demo[/bold green]                  运行自动化演示
 """
 
 
@@ -247,7 +247,7 @@ def main() -> None:
 
     if cmd in ("themes", "theme", "--themes"):
         res = engine.chat("请把这些 session 整理成跟我有关的最核心主题")
-        render_turn("mailuo themes", res, engine.storage.db_label)
+        render_turn("mai themes", res, engine.storage.db_label)
         print_sessions_table(engine)
         return
 
@@ -267,7 +267,7 @@ def main() -> None:
             if not engine.get_active_session():
                 engine.create_topic_session(title="pi.dev 专题讨论", tags=["pi.dev"])
             res = engine.chat("拉起 pi 交互式会话", agent_backend="pi", interactive_agent=True)
-        render_turn(f"mailuo pi {rest}".strip(), res, engine.storage.db_label)
+        render_turn(f"mai pi {rest}".strip(), res, engine.storage.db_label)
         return
 
     if cmd == "agy":
@@ -277,7 +277,7 @@ def main() -> None:
             if not engine.get_active_session():
                 engine.create_topic_session(title="Google agy 专题讨论", tags=["agy"])
             res = engine.chat("拉起 agy 交互式会话", agent_backend="agy", interactive_agent=True)
-        render_turn(f"mailuo agy {rest}".strip(), res, engine.storage.db_label)
+        render_turn(f"mai agy {rest}".strip(), res, engine.storage.db_label)
         return
 
     # 其他情况：直接把参数当做自然语言对话输入！

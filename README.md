@@ -1,4 +1,4 @@
-# Mailuo (脉络) — 基于 Cloudflare D1 的跨 Agent (`pi.dev` / `Google agy`) 脉络与核心主题管理
+# Mailuo (脉络 `mai`) — 基于 Cloudflare D1 的跨 Agent (`pi.dev` / `Google agy`) 脉络与核心主题管理
 
 > 解决跟多个 Agent 对话时“单窗口穿插杂事导致上下文混乱”、“多窗口/跨工具碎片化找不到历史讨论”的核心痛点。所有数据默认实时同步保存在 **Cloudflare D1 (`mailuo-db`)**。
 
@@ -10,32 +10,32 @@ pip install -e .
 # pip install git+https://github.com/EeroEternal/mailuo.git
 ```
 
-安装后即可在任意终端直接使用 `mailuo` 命令。
+安装后即可在任意终端直接使用极简命令 **`mai`**。
 
-## 2. 极简 CLI 用法
+## 2. 极简 `mai` 用法
 
 ```bash
 # 1) 直接对话（自动路由：延续话题 / 穿插提问隔离 / 调出旧话题 / 整理核心主题）
-mailuo "我想讨论一下在 Cloudflare D1 上存储多 Agent 脉络的架构方案"
+mai "我想讨论一下在 Cloudflare D1 上存储多 Agent 脉络的架构方案"
 
 # 2) 临时穿插无关问题（自动进入隔离沙箱，绝不污染当前话题摘要）
-mailuo "顺便问一下，帮我写个匹配邮箱的正则"
+mai "顺便问一下，帮我写个匹配邮箱的正则"
 
 # 3) 自然语言调出历史话题 Session
-mailuo "上次我们讨论的那个 Cloudflare D1 架构的话题调出来"
+mai "上次我们讨论的那个 Cloudflare D1 架构的话题调出来"
 
 # 4) 在当前话题脉络下直接拉起 pi.dev 或 Google agy
-mailuo pi                       # 直接进入 pi.dev 交互式 TUI（自动绑定当前话题的 --session-id，退出后自动记录到 Cloudflare D1）
-mailuo pi "帮我分析一下这段代码" # 用 pi.dev 单次回答并记录到当前话题
-mailuo agy                      # 直接进入 Google Antigravity (agy) 交互式界面
+mai pi                       # 直接进入 pi.dev 交互式 TUI（自动绑定当前话题的 --session-id，退出后自动记录到 Cloudflare D1）
+mai pi "帮我分析一下这段代码" # 用 pi.dev 单次回答并记录到当前话题
+mai agy                      # 直接进入 Google Antigravity (agy) 交互式界面
 
 # 5) 查看 Cloudflare D1 中的所有具体话题与整理核心主题
-mailuo ls                       # 查看所有 Topic Sessions
-mailuo themes                   # 把所有零散 Session 自动整理成与你相关的『最核心主题』
-mailuo sync                     # 将本机 ~/.pi/agent/sessions 和 ~/.gemini/antigravity-cli/brain 同步至 Cloudflare D1
+mai ls                       # 查看所有 Topic Sessions
+mai themes                   # 把所有零散 Session 自动整理成与你相关的『最核心主题』
+mai sync                     # 将本机 ~/.pi/agent/sessions 和 ~/.gemini/antigravity-cli/brain 同步至 Cloudflare D1
 
 # 6) 进入交互式控制台
-mailuo
+mai
 ```
 
 ## 3. Cloudflare D1 存储说明

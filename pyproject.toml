@@ -13,6 +13,7 @@ dependencies = [
 ]
 
 [project.scripts]
+mai = "mailuo.cli:main"
 mailuo = "mailuo.cli:main"
 
 [build-system]
