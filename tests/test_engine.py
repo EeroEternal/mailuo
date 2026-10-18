@@ -1,9 +1,11 @@
-"""Unit and integration tests for Mailuo (脉络) Topic-Centric Session Engine."""
+"""Unit and integration tests for Mailuo (脉络) Topic-Centric Session Engine & Multi-Agent Bridges."""
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
+from mailuo.adapters import GoogleAgyBridge, PiDevBridge
 from mailuo.engine import MailuoEngine
 from mailuo.models import RouteActionType
 
@@ -77,3 +79,96 @@ def test_recall_previous_sessions_and_consolidate_themes(tmp_path: Path) -> None
     # 验证所有 Session 均已挂载到对应的 CoreTheme 下
     all_sessions = engine.storage.list_sessions()
     assert all(s.theme_id is not None for s in all_sessions)
+
+
+def test_pi_and_agy_bridges_command_and_transcript_sync(tmp_path: Path) -> None:
+    """验证拉起 pi.dev (`pi`) 与 Google Antigravity (`agy`) 的命令生成（含穿插隔离 `--no-session`）以及 JSONL 历史会话导入."""
+    pi_dir = tmp_path / "pi_sessions" / "proj"
+    pi_dir.mkdir(parents=True)
+    pi_file = pi_dir / "2026-10-18_01a09e80-b7ef-7244-97b1-97596872c2b2.jsonl"
+    pi_lines = [
+        {"type": "session", "version": 3, "id": "01a09e80-b7ef-7244-97b1-97596872c2b2", "cwd": "/tmp"},
+        {
+            "type": "message",
+            "id": "m1",
+            "timestamp": "2026-10-18T10:00:00Z",
+            "message": {
+                "role": "user",
+                "content": [{"type": "text", "text": "smartgate 在针对推理引擎和 agent 之间做了什么样的上下文处理"}],
+            },
+        },
+        {
+            "type": "message",
+            "id": "m2",
+            "timestamp": "2026-10-18T10:00:05Z",
+            "message": {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "SmartGate 通过网关层对推理引擎与 Agent 上下文进行了分片缓存与路由优化。"}],
+            },
+        },
+    ]
+    pi_file.write_text("\n".join(json.dumps(x, ensure_ascii=False) for x in pi_lines), encoding="utf-8")
+
+    agy_dir = tmp_path / "agy_brain" / "conv-agy-999" / ".system_generated" / "logs"
+    agy_dir.mkdir(parents=True)
+    agy_file = agy_dir / "transcript.jsonl"
+    agy_lines = [
+        {
+            "step_index": 0,
+            "type": "USER_INPUT",
+            "created_at": "2026-10-18T11:00:00Z",
+            "content": "<USER_REQUEST>\n设计一套基于 SQLite 的跨 Agent 脉络管理系统\n</USER_REQUEST>",
+        },
+        {
+            "step_index": 1,
+            "type": "PLANNER_RESPONSE",
+            "created_at": "2026-10-18T11:00:10Z",
+            "content": "我们可以使用 TopicSession 与 CoreTheme 两层模型来管理。",
+        },
+    ]
+    agy_file.write_text("\n".join(json.dumps(x, ensure_ascii=False) for x in agy_lines), encoding="utf-8")
+
+    pi_bridge = PiDevBridge(sessions_root=tmp_path / "pi_sessions")
+    agy_bridge = GoogleAgyBridge(brain_root=tmp_path / "agy_brain")
+    engine = MailuoEngine(
+        db_path=tmp_path / "multi_agent.db",
+        pi_bridge=pi_bridge,
+        agy_bridge=agy_bridge,
+    )
+
+    # 1. 测试从磁盘同步 pi 和 agy 的原生会话
+    imported = engine.sync_external_sessions(source="all")
+    assert len(imported) == 2
+
+    # 2. 测试用自然语言调出刚刚从 pi.dev 导入的关于 smartgate 推理引擎的话题
+    recalled = engine.chat("上次我们讨论的那个 smartgate 推理引擎上下文处理的话题调出来")
+    assert recalled.decision.action == RouteActionType.SWITCH_EXISTING
+    assert recalled.active_session is not None
+    assert recalled.active_session.external_sessions.get("pi") == "01a09e80-b7ef-7244-97b1-97596872c2b2"
+
+    # 3. 验证正常推进时拉起 pi 会自动带上绑定的 --session-id
+    normal_cmd = pi_bridge.build_command(
+        recalled.active_session,
+        prompt="继续深入聊聊缓存淘汰策略",
+        is_tangent=False,
+    )
+    assert "--session-id" in normal_cmd
+    assert "01a09e80-b7ef-7244-97b1-97596872c2b2" in normal_cmd
+    assert "--no-session" not in normal_cmd
+
+    # 4. 验证穿插提问时拉起 pi 会自动使用 --no-session 隔离，不污染 pi 原生会话
+    tangent_cmd = pi_bridge.build_command(
+        recalled.active_session,
+        prompt="顺便问一下 bash 怎么查看端口占用",
+        is_tangent=True,
+    )
+    assert "--no-session" in tangent_cmd
+    assert "--session-id" not in tangent_cmd
+
+    # 5. 验证同一话题切换到 Google agy 时，会自动注入之前在 pi 里聊出的摘要上下文
+    agy_cmd = agy_bridge.build_command(
+        recalled.active_session,
+        prompt="请帮我把刚才在 pi 里讨论的网关缓存逻辑写成代码",
+        is_tangent=False,
+    )
+    assert any("【Mailuo 脉络上下文】" in arg for arg in agy_cmd)

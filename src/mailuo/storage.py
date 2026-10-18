@@ -67,6 +67,7 @@ class MailuoStorage:
                 summary TEXT NOT NULL DEFAULT '',
                 key_decisions_json TEXT NOT NULL DEFAULT '[]',
                 open_questions_json TEXT NOT NULL DEFAULT '[]',
+                external_sessions_json TEXT NOT NULL DEFAULT '{}',
                 embedding_json TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
@@ -77,6 +78,7 @@ class MailuoStorage:
                 session_id TEXT NOT NULL,
                 role TEXT NOT NULL,
                 content TEXT NOT NULL,
+                agent_source TEXT NOT NULL DEFAULT 'mailuo',
                 is_ephemeral INTEGER NOT NULL DEFAULT 0,
                 metadata_json TEXT NOT NULL DEFAULT '{}',
                 created_at TEXT NOT NULL,
@@ -89,6 +91,15 @@ class MailuoStorage:
             );
             """
         )
+        # 兼容已有数据库增量字段迁移
+        for alter_sql in (
+            "ALTER TABLE topic_sessions ADD COLUMN external_sessions_json TEXT NOT NULL DEFAULT '{}'",
+            "ALTER TABLE messages ADD COLUMN agent_source TEXT NOT NULL DEFAULT 'mailuo'",
+        ):
+            try:
+                cur.execute(alter_sql)
+            except sqlite3.OperationalError:
+                pass
         self._conn.commit()
 
     # ------------------------------------------------------------------
@@ -120,9 +131,9 @@ class MailuoStorage:
             """
             INSERT INTO topic_sessions (
                 id, title, tags_json, theme_id, parent_session_id, status,
-                summary, key_decisions_json, open_questions_json, embedding_json,
-                created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                summary, key_decisions_json, open_questions_json, external_sessions_json,
+                embedding_json, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 title = excluded.title,
                 tags_json = excluded.tags_json,
@@ -132,6 +143,7 @@ class MailuoStorage:
                 summary = excluded.summary,
                 key_decisions_json = excluded.key_decisions_json,
                 open_questions_json = excluded.open_questions_json,
+                external_sessions_json = excluded.external_sessions_json,
                 embedding_json = COALESCE(excluded.embedding_json, topic_sessions.embedding_json),
                 updated_at = excluded.updated_at
             """,
@@ -145,6 +157,7 @@ class MailuoStorage:
                 session.summary,
                 json.dumps(session.key_decisions, ensure_ascii=False),
                 json.dumps(session.open_questions, ensure_ascii=False),
+                json.dumps(session.external_sessions, ensure_ascii=False),
                 json.dumps(session.embedding) if session.embedding else None,
                 session.created_at,
                 session.updated_at,
@@ -176,6 +189,11 @@ class MailuoStorage:
 
     def _row_to_session(self, row: sqlite3.Row) -> TopicSession:
         emb_raw = row["embedding_json"]
+        ext_raw = (
+            row["external_sessions_json"]
+            if "external_sessions_json" in row.keys()
+            else "{}"
+        )
         return TopicSession(
             id=row["id"],
             title=row["title"],
@@ -186,6 +204,7 @@ class MailuoStorage:
             summary=row["summary"] or "",
             key_decisions=json.loads(row["key_decisions_json"] or "[]"),
             open_questions=json.loads(row["open_questions_json"] or "[]"),
+            external_sessions=json.loads(ext_raw or "{}"),
             embedding=json.loads(emb_raw) if emb_raw else None,
             created_at=row["created_at"],
             updated_at=row["updated_at"],
@@ -197,14 +216,15 @@ class MailuoStorage:
     def add_message(self, msg: MessageRecord) -> MessageRecord:
         self._conn.execute(
             """
-            INSERT INTO messages (id, session_id, role, content, is_ephemeral, metadata_json, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO messages (id, session_id, role, content, agent_source, is_ephemeral, metadata_json, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 msg.id,
                 msg.session_id,
                 msg.role,
                 msg.content,
+                msg.agent_source,
                 1 if msg.is_ephemeral else 0,
                 json.dumps(msg.metadata, ensure_ascii=False),
                 msg.created_at,
@@ -237,6 +257,7 @@ class MailuoStorage:
                 session_id=r["session_id"],
                 role=r["role"],
                 content=r["content"],
+                agent_source=r["agent_source"] if "agent_source" in r.keys() else "mailuo",
                 is_ephemeral=bool(r["is_ephemeral"]),
                 metadata=json.loads(r["metadata_json"] or "{}"),
                 created_at=r["created_at"],

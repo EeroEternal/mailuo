@@ -65,6 +65,12 @@ class TopicSession(BaseModel):
     key_decisions: list[str] = Field(default_factory=list, description="已达成的关键结论或决策")
     open_questions: list[str] = Field(default_factory=list, description="待解决的问题或下一步计划")
 
+    # 跨 Agent 外部会话绑定（例如 {"pi": "uuid-1234", "agy": "conv-5678"}）
+    external_sessions: dict[str, str] = Field(
+        default_factory=dict,
+        description="绑定的外部 Agent 原生 Session ID 映射 (如 pi, agy)",
+    )
+
     embedding: Optional[list[float]] = Field(default=None, exclude=True)
     created_at: str = Field(default_factory=utc_now_iso)
     updated_at: str = Field(default_factory=utc_now_iso)
@@ -77,6 +83,10 @@ class MessageRecord(BaseModel):
     session_id: str = Field(..., description="所属的 TopicSession ID")
     role: str = Field(..., description="user / assistant / system")
     content: str = Field(..., description="消息内容")
+    agent_source: str = Field(
+        default="mailuo",
+        description="产生或处理该消息的 Agent 来源 (如 pi, agy, mailuo)",
+    )
     is_ephemeral: bool = Field(
         default=False,
         description="是否为临时穿插提问（Side-chat）。若为 True，则不会污染主 Session 的长期上下文",

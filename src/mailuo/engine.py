@@ -1,4 +1,4 @@
-"""Core Topic-Centric Session Manager (脉络核心引擎)."""
+"""Core Topic-Centric Session Manager (脉络核心引擎 — 支持跨 pi.dev 与 Google agy 协同)."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+from .adapters import AgentExecutionResult, GoogleAgyBridge, PiDevBridge
 from .llm import LLMBackend
 from .models import (
     CoreTheme,
@@ -25,26 +26,33 @@ class TurnResult:
     decision: RouteDecision
     active_session: Optional[TopicSession]
     reply: str
+    agent_backend: str = "mailuo"
+    agent_execution: Optional[AgentExecutionResult] = None
     consolidated_themes: Optional[list[CoreTheme]] = None
 
 
 class MailuoEngine:
-    """围绕具体内容与核心主题的 Agent Session 管理器.
+    """围绕具体内容与核心主题的多 Agent Session 管理器.
 
     核心能力：
     1. 自动路由用户输入（继续当前话题 / 隔离临时穿插问题 / 语义召回历史话题 / 开启新话题）
-    2. 保持每个 TopicSession 上下文高度纯净（临时穿插提问标记为 ephemeral，不污染主线摘要）
-    3. 随时通过自然语言『把上次讨论 XX 的话题调出来』恢复历史上下文
-    4. 一键或自然语言触发『整理核心主题』，将零散 Session 归纳为用户专属的 CoreTheme
+    2. 支持直接拉起外部 Agent（`pi.dev` 的 `pi` CLI 或 Google Antigravity 的 `agy` CLI），
+       并按脉络逻辑管理它们的 `--session-id` / `--no-session` / `--conversation`
+    3. 支持一键从本地磁盘同步导入 `~/.pi/agent/sessions` 和 `~/.gemini/antigravity-cli/brain` 的历史对话，
+       统一整理为用户最核心的主题 (`CoreTheme`)
     """
 
     def __init__(
         self,
         db_path: str | Path = "~/.mailuo/mailuo.db",
         llm: Optional[LLMBackend] = None,
+        pi_bridge: Optional[PiDevBridge] = None,
+        agy_bridge: Optional[GoogleAgyBridge] = None,
     ) -> None:
         self.storage = MailuoStorage(db_path=db_path)
         self.llm = llm or LLMBackend()
+        self.pi_bridge = pi_bridge or PiDevBridge()
+        self.agy_bridge = agy_bridge or GoogleAgyBridge()
 
     # ------------------------------------------------------------------
     # 当前激活 Session 管理
@@ -59,7 +67,6 @@ class MailuoEngine:
         sess = self.storage.get_session(session_id)
         if not sess:
             raise ValueError(f"未找到 ID 为 {session_id} 的话题 Session")
-        # 将旧激活 session 设为 paused
         current = self.get_active_session()
         if current and current.id != sess.id and current.status == SessionStatus.ACTIVE:
             current.status = SessionStatus.PAUSED
@@ -75,6 +82,7 @@ class MailuoEngine:
         title: str,
         tags: Optional[list[str]] = None,
         parent_session_id: Optional[str] = None,
+        external_sessions: Optional[dict[str, str]] = None,
     ) -> TopicSession:
         current = self.get_active_session()
         if current and current.status == SessionStatus.ACTIVE:
@@ -87,6 +95,7 @@ class MailuoEngine:
             tags=tags or [],
             parent_session_id=parent_session_id or (current.id if current else None),
             status=SessionStatus.ACTIVE,
+            external_sessions=external_sessions or {},
             embedding=emb,
         )
         self.storage.save_session(sess)
@@ -94,14 +103,23 @@ class MailuoEngine:
         return sess
 
     # ------------------------------------------------------------------
-    # 核心对话入口：自动分流、召回、隔离与整理
+    # 核心对话入口：自动分流、召回、隔离、拉起外部 Agent (pi / agy) 与整理
     # ------------------------------------------------------------------
     def chat(
         self,
         user_input: str,
+        agent_backend: str = "mailuo",
+        interactive_agent: bool = False,
         force_tangent: bool = False,
         force_new_topic: bool = False,
+        cwd: Optional[str | Path] = None,
     ) -> TurnResult:
+        """执行一轮对话.
+
+        参数:
+            agent_backend: "mailuo" (内置引擎) | "pi" (拉起 pi.dev) | "agy" (拉起 Google Antigravity)
+            interactive_agent: 若为 True 且指定了 pi/agy，则直接拉起其交互式 TUI 会话并在退出后同步记录
+        """
         active_sess = self.get_active_session()
 
         if force_tangent and active_sess is not None:
@@ -124,7 +142,7 @@ class MailuoEngine:
         # 分支 1：整理核心主题 (CONSOLIDATE)
         if decision.action == RouteActionType.CONSOLIDATE:
             themes = self.consolidate_themes()
-            lines = [f"已将您的所有历史话题整理归纳为 **{len(themes)} 个核心主题 (Core Themes)**：\n"]
+            lines = [f"已将您的所有跨 Agent 历史话题整理归纳为 **{len(themes)} 个核心主题 (Core Themes)**：\n"]
             for idx, th in enumerate(themes, 1):
                 lines.append(
                     f"### {idx}. {th.name} (`{th.id}`)\n"
@@ -135,6 +153,7 @@ class MailuoEngine:
                 decision=decision,
                 active_session=active_sess,
                 reply="\n".join(lines),
+                agent_backend=agent_backend,
                 consolidated_themes=themes,
             )
 
@@ -157,10 +176,26 @@ class MailuoEngine:
                 is_tangent=False,
                 recalled_from_search=True,
             )
+            # 如果用户要求切回历史话题同时直接拉起交互式 pi 或 agy
+            exec_res: Optional[AgentExecutionResult] = None
+            if interactive_agent and agent_backend in ("pi", "agy"):
+                exec_res = self._invoke_external_agent(
+                    agent_backend=agent_backend,
+                    session=target_sess,
+                    prompt="请基于当前恢复的脉络上下文继续我们的讨论。",
+                    theme=theme,
+                    recent_messages=recent_msgs,
+                    is_tangent=False,
+                    interactive=True,
+                    cwd=cwd,
+                )
+                self.storage.save_session(target_sess)
             return TurnResult(
                 decision=decision,
                 active_session=target_sess,
                 reply=reply,
+                agent_backend=agent_backend,
+                agent_execution=exec_res,
             )
 
         # 分支 3：开启新话题 (NEW_TOPIC)
@@ -186,24 +221,41 @@ class MailuoEngine:
                 session_id=active_sess.id,
                 role="user",
                 content=user_input,
+                agent_source="user",
                 is_ephemeral=is_tangent,
             )
         )
 
-        reply = self.llm.generate_reply(
-            user_input=user_input,
-            session=active_sess,
-            recent_messages=recent_msgs,
-            theme=theme,
-            is_tangent=is_tangent,
-            recalled_from_search=False,
-        )
+        exec_res = None
+        if agent_backend in ("pi", "agy"):
+            exec_res = self._invoke_external_agent(
+                agent_backend=agent_backend,
+                session=active_sess,
+                prompt=user_input,
+                theme=theme,
+                recent_messages=recent_msgs,
+                is_tangent=is_tangent,
+                interactive=interactive_agent,
+                cwd=cwd,
+            )
+            reply = exec_res.reply
+            self.storage.save_session(active_sess)
+        else:
+            reply = self.llm.generate_reply(
+                user_input=user_input,
+                session=active_sess,
+                recent_messages=recent_msgs,
+                theme=theme,
+                is_tangent=is_tangent,
+                recalled_from_search=False,
+            )
 
         self.storage.add_message(
             MessageRecord(
                 session_id=active_sess.id,
                 role="assistant",
                 content=reply,
+                agent_source=agent_backend,
                 is_ephemeral=is_tangent,
             )
         )
@@ -220,7 +272,141 @@ class MailuoEngine:
             decision=decision,
             active_session=active_sess,
             reply=reply,
+            agent_backend=agent_backend,
+            agent_execution=exec_res,
         )
+
+    def _invoke_external_agent(
+        self,
+        agent_backend: str,
+        session: TopicSession,
+        prompt: str,
+        theme: Optional[CoreTheme],
+        recent_messages: list[MessageRecord],
+        is_tangent: bool,
+        interactive: bool,
+        cwd: Optional[str | Path],
+    ) -> AgentExecutionResult:
+        if agent_backend == "pi":
+            return self.pi_bridge.run_turn(
+                session=session,
+                prompt=prompt,
+                theme=theme,
+                recent_messages=recent_messages,
+                is_tangent=is_tangent,
+                interactive=interactive,
+                cwd=cwd,
+            )
+        if agent_backend == "agy":
+            return self.agy_bridge.run_turn(
+                session=session,
+                prompt=prompt,
+                theme=theme,
+                recent_messages=recent_messages,
+                is_tangent=is_tangent,
+                interactive=interactive,
+                cwd=cwd,
+            )
+        raise ValueError(f"不支持的外部 Agent 类型: {agent_backend}")
+
+    # ------------------------------------------------------------------
+    # 扫描并导入本地已有的 pi.dev 与 Google agy 原生会话记录
+    # ------------------------------------------------------------------
+    def sync_external_sessions(
+        self,
+        source: str = "all",
+        limit_per_source: int = 10,
+    ) -> list[TopicSession]:
+        """从 `~/.pi/agent/sessions` 和 `~/.gemini/antigravity-cli/brain` 导入原生会话并按脉络逻辑生成结构化 TopicSession."""
+        existing_sessions = self.storage.list_sessions(include_merged=True)
+        known_ext_ids: dict[str, TopicSession] = {}
+        for s in existing_sessions:
+            for agent_k, ext_id in s.external_sessions.items():
+                known_ext_ids[f"{agent_k}:{ext_id}"] = s
+
+        imported: list[TopicSession] = []
+
+        # 1. 同步 pi.dev 会话
+        if source in ("all", "pi"):
+            for fpath in self.pi_bridge.list_recent_session_files(limit=limit_per_source):
+                parsed = self.pi_bridge.parse_pi_jsonl(fpath)
+                ext_id = parsed["external_session_id"]
+                msgs = parsed["messages"]
+                if not msgs:
+                    continue
+                key = f"pi:{ext_id}"
+                if key in known_ext_ids:
+                    continue
+
+                first_user_msg = next(
+                    (m["content"] for m in msgs if m["role"] == "user"),
+                    "pi.dev 导入会话",
+                )
+                title, tags = self.llm._extract_title_and_tags(first_user_msg)
+                if "pi.dev" not in tags:
+                    tags.append("pi.dev")
+
+                sess = self.create_topic_session(
+                    title=title,
+                    tags=tags,
+                    external_sessions={"pi": ext_id},
+                )
+                for m in msgs:
+                    self.storage.add_message(
+                        MessageRecord(
+                            session_id=sess.id,
+                            role=m["role"],
+                            content=m["content"],
+                            agent_source="pi",
+                            is_ephemeral=False,
+                        )
+                    )
+                clean_records = self.storage.get_session_messages(sess.id)
+                sess = self.llm.update_session_state(sess, clean_records)
+                self.storage.save_session(sess)
+                imported.append(sess)
+
+        # 2. 同步 Google Antigravity (agy) 会话
+        if source in ("all", "agy"):
+            for fpath in self.agy_bridge.list_recent_transcripts(limit=limit_per_source):
+                parsed = self.agy_bridge.parse_agy_transcript(fpath)
+                ext_id = parsed["external_session_id"]
+                msgs = parsed["messages"]
+                if not msgs:
+                    continue
+                key = f"agy:{ext_id}"
+                if key in known_ext_ids:
+                    continue
+
+                first_user_msg = next(
+                    (m["content"] for m in msgs if m["role"] == "user"),
+                    "Google AGY 导入会话",
+                )
+                title, tags = self.llm._extract_title_and_tags(first_user_msg)
+                if "agy" not in tags:
+                    tags.append("agy")
+
+                sess = self.create_topic_session(
+                    title=title,
+                    tags=tags,
+                    external_sessions={"agy": ext_id},
+                )
+                for m in msgs:
+                    self.storage.add_message(
+                        MessageRecord(
+                            session_id=sess.id,
+                            role=m["role"],
+                            content=m["content"],
+                            agent_source="agy",
+                            is_ephemeral=False,
+                        )
+                    )
+                clean_records = self.storage.get_session_messages(sess.id)
+                sess = self.llm.update_session_state(sess, clean_records)
+                self.storage.save_session(sess)
+                imported.append(sess)
+
+        return imported
 
     # ------------------------------------------------------------------
     # 话题检索与核心主题归纳 API
@@ -238,7 +424,7 @@ class MailuoEngine:
         return self.switch_session(best_sess.id)
 
     def consolidate_themes(self) -> list[CoreTheme]:
-        """把所有零散的 TopicSession 整理成与用户有关的最核心主题 (Core Themes)."""
+        """把所有零散的 TopicSession (无论来自 pi、agy 还是内置对话) 整理成与用户有关的最核心主题."""
         sessions = self.storage.list_sessions(include_merged=False)
         if not sessions:
             return []
@@ -256,13 +442,12 @@ class MailuoEngine:
     def merge_sessions(
         self, source_session_id: str, target_session_id: str
     ) -> TopicSession:
-        """将两个讨论同一具体内容的碎片 Session 合并."""
+        """将两个讨论同一具体内容的碎片 Session 合并（保留多 Agent 绑定关系）."""
         src = self.storage.get_session(source_session_id)
         dst = self.storage.get_session(target_session_id)
         if not src or not dst:
             raise ValueError("源 Session 或目标 Session 不存在")
 
-        # 迁移非临时消息
         src_msgs = self.storage.get_session_messages(src.id, include_ephemeral=False)
         for m in src_msgs:
             self.storage.add_message(
@@ -270,15 +455,16 @@ class MailuoEngine:
                     session_id=dst.id,
                     role=m.role,
                     content=m.content,
+                    agent_source=m.agent_source,
                     is_ephemeral=False,
                     metadata={"merged_from": src.id},
                 )
             )
 
-        # 合并标签、结论与待办
         dst.tags = list(dict.fromkeys(dst.tags + src.tags))
         dst.key_decisions = list(dict.fromkeys(dst.key_decisions + src.key_decisions))
         dst.open_questions = list(dict.fromkeys(dst.open_questions + src.open_questions))
+        dst.external_sessions = {**src.external_sessions, **dst.external_sessions}
 
         src.status = SessionStatus.MERGED
         self.storage.save_session(src)
