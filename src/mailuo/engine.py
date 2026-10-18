@@ -407,9 +407,10 @@ class MailuoEngine:
     def sync_external_sessions(
         self,
         source: str = "all",
-        limit_per_source: int = 10,
+        limit_per_source: int = 12,
+        auto_consolidate: bool = True,
     ) -> list[TopicSession]:
-        """从 `~/.pi/agent/sessions` 和 `~/.gemini/antigravity-cli/brain` 导入原生会话并按脉络逻辑生成结构化 TopicSession."""
+        """从 `~/.pi/agent/sessions` 和 `~/.gemini/antigravity-cli/brain` 导入原生会话并自动整理为核心主题."""
         existing_sessions = self.storage.list_sessions(include_merged=True)
         known_ext_ids: dict[str, TopicSession] = {}
         for s in existing_sessions:
@@ -424,37 +425,40 @@ class MailuoEngine:
                 parsed = self.pi_bridge.parse_pi_jsonl(fpath)
                 ext_id = parsed["external_session_id"]
                 msgs = parsed["messages"]
-                if not msgs:
+                cwd = parsed.get("cwd") or ""
+                user_texts = [m["content"] for m in msgs if m["role"] == "user"]
+                if not user_texts:
+                    continue
+                if any("专题讨论" in ut or "拉起 pi 交互式会话" in ut for ut in user_texts[:2]):
                     continue
                 key = f"pi:{ext_id}"
                 if key in known_ext_ids:
                     continue
 
-                first_user_msg = next(
-                    (m["content"] for m in msgs if m["role"] == "user"),
-                    "pi.dev 导入会话",
+                title, tags = self.llm.extract_session_title_and_tags(
+                    user_messages=user_texts,
+                    cwd=cwd,
+                    agent_source="pi.dev",
                 )
-                title, tags = self.llm._extract_title_and_tags(first_user_msg)
-                if "pi.dev" not in tags:
-                    tags.append("pi.dev")
-
-                sess = self.create_topic_session(
+                emb = self.llm.embed(f"{title} {' '.join(tags)}")
+                sess = TopicSession(
                     title=title,
                     tags=tags,
+                    status=SessionStatus.PAUSED,
                     external_sessions={"pi": ext_id},
+                    embedding=emb,
                 )
-                for m in msgs:
-                    self.storage.add_message(
-                        MessageRecord(
-                            session_id=sess.id,
-                            role=m["role"],
-                            content=m["content"],
-                            agent_source="pi",
-                            is_ephemeral=False,
-                        )
+                all_temp_records = [
+                    MessageRecord(
+                        session_id=sess.id,
+                        role=m["role"],
+                        content=self.llm._strip_file_paths(m["content"]) or m["content"][:200],
+                        agent_source="pi",
+                        is_ephemeral=False,
                     )
-                clean_records = self.storage.get_session_messages(sess.id)
-                sess = self.llm.update_session_state(sess, clean_records)
+                    for m in msgs
+                ]
+                sess = self.llm.update_session_state(sess, all_temp_records)
                 self.storage.save_session(sess)
                 imported.append(sess)
 
@@ -464,39 +468,44 @@ class MailuoEngine:
                 parsed = self.agy_bridge.parse_agy_transcript(fpath)
                 ext_id = parsed["external_session_id"]
                 msgs = parsed["messages"]
-                if not msgs:
+                user_texts = [m["content"] for m in msgs if m["role"] == "user"]
+                if not user_texts:
+                    continue
+                if any("专题讨论》" in ut or "拉起 agy 交互式会话" in ut for ut in user_texts[:2]):
                     continue
                 key = f"agy:{ext_id}"
                 if key in known_ext_ids:
                     continue
 
-                first_user_msg = next(
-                    (m["content"] for m in msgs if m["role"] == "user"),
-                    "Google AGY 导入会话",
+                title, tags = self.llm.extract_session_title_and_tags(
+                    user_messages=user_texts,
+                    cwd="",
+                    agent_source="agy",
                 )
-                title, tags = self.llm._extract_title_and_tags(first_user_msg)
-                if "agy" not in tags:
-                    tags.append("agy")
-
-                sess = self.create_topic_session(
+                emb = self.llm.embed(f"{title} {' '.join(tags)}")
+                sess = TopicSession(
                     title=title,
                     tags=tags,
+                    status=SessionStatus.PAUSED,
                     external_sessions={"agy": ext_id},
+                    embedding=emb,
                 )
-                for m in msgs:
-                    self.storage.add_message(
-                        MessageRecord(
-                            session_id=sess.id,
-                            role=m["role"],
-                            content=m["content"],
-                            agent_source="agy",
-                            is_ephemeral=False,
-                        )
+                all_temp_records = [
+                    MessageRecord(
+                        session_id=sess.id,
+                        role=m["role"],
+                        content=self.llm._strip_file_paths(m["content"]) or m["content"][:200],
+                        agent_source="agy",
+                        is_ephemeral=False,
                     )
-                clean_records = self.storage.get_session_messages(sess.id)
-                sess = self.llm.update_session_state(sess, clean_records)
+                    for m in msgs
+                ]
+                sess = self.llm.update_session_state(sess, all_temp_records)
                 self.storage.save_session(sess)
                 imported.append(sess)
+
+        if auto_consolidate and (imported or existing_sessions):
+            self.consolidate_themes()
 
         return imported
 

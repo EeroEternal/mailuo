@@ -7,6 +7,7 @@ import json
 import math
 import os
 import re
+from pathlib import Path
 from typing import Any, Optional
 
 from .models import CoreTheme, MessageRecord, RouteActionType, RouteDecision, TopicSession
@@ -468,12 +469,39 @@ JSON 格式:
             except Exception:
                 pass
 
-        # 本地智能聚类（基于标签重合度 + 语义向量相似度 + 领域词典映射）
+        # 本地智能聚类（结合用户真实工程领域 + 语义关键词映射）
         domain_rules = [
-            ("AI Agent 与上下文工程", ["agent", "session", "上下文", "记忆", "大模型", "llm", "prompt", "脉络", "对话"]),
-            ("后端架构与数据库存储", ["数据库", "sqlite", "postgres", "向量", "架构", "检索", "后端", "api", "性能", "存储"]),
-            ("产品设计与个人效率", ["产品", "需求", "交互", "笔记", "知识库", "管理", "工作流", "效率"]),
-            ("量化与投资理财", ["量化", "股票", "策略", "交易", "理财", "回测", "基金"]),
+            (
+                "AI 网关与高并发负载均衡 (xlite / xgateway / Flux / SmartGate)",
+                [
+                    "xlite", "xgateway", "flux", "smartgate", "xrouter", "xlb",
+                    "网关", "负载均衡", "并发", "调度", "压测", "new api", "newapi",
+                    "l4", "tcp", "限流", "缓冲", "上游", "推理引擎", "评分",
+                ],
+            ),
+            (
+                "AI Agent 脉络与知识自动化工具 (Mailuo / X.com Threads / Zenotes)",
+                [
+                    "agent", "session", "上下文", "记忆", "脉络", "mailuo", "mai",
+                    "threads", "x.com", "zenotes", "笔记", "知识库", "核心主题",
+                    "mapreduce",
+                ],
+            ),
+            (
+                "分布式算力集群与基础设施运维 (TileInfer / XEnsemble / GCP / Linux)",
+                [
+                    "tileinfer", "xensemble", "cfchannel", "ssh", "gcp", "linux",
+                    "主机", "hosts", "10.119", "192.168", "服务器", "部署", "postgresql",
+                ],
+            ),
+            (
+                "后端架构与数据库存储",
+                ["数据库", "sqlite", "cloudflare", "d1", "向量", "架构", "检索", "后端"],
+            ),
+            (
+                "量化与投资理财",
+                ["量化", "股票", "策略", "交易", "理财", "回测", "基金"],
+            ),
         ]
 
         buckets: dict[str, list[TopicSession]] = {}
@@ -494,14 +522,17 @@ JSON 格式:
             else:
                 unassigned.append(s)
 
-        # 对未命中预设领域的 Session 按标签或独立成组
+        # 对未命中预设领域的 Session 按项目标签或归入日常工程研发
         for s in unassigned:
-            group_key = f"专题：{s.tags[0]}" if s.tags else f"专题：{s.title[:12]}"
+            proj_tags = [t for t in s.tags if t not in ("pi.dev", "agy", "users")]
+            group_key = f"专题：{proj_tags[0]}" if proj_tags else "日常工程研发与系统排障"
             buckets.setdefault(group_key, []).append(s)
 
         themes: list[CoreTheme] = []
         for theme_name, grouped_sessions in buckets.items():
-            titles = [f"《{gs.title}》" for gs in grouped_sessions]
+            titles = [f"《{gs.title}》" for gs in grouped_sessions[:6]]
+            if len(grouped_sessions) > 6:
+                titles.append(f"等 {len(grouped_sessions)} 个话题")
             all_decisions: list[str] = []
             for gs in grouped_sessions:
                 all_decisions.extend(gs.key_decisions)
@@ -510,11 +541,9 @@ JSON 格式:
                 f"聚合了 {len(grouped_sessions)} 个具体讨论话题（{', '.join(titles)}）。"
             ]
             if all_decisions:
-                insight_parts.append("核心沉淀结论：" + "；".join(all_decisions[:5]))
-            else:
-                summaries = [gs.summary for gs in grouped_sessions if gs.summary]
-                if summaries:
-                    insight_parts.append("脉络综述：" + " | ".join(summaries[:3]))
+                clean_decs = [self._strip_file_paths(d)[:65] for d in all_decisions if self._strip_file_paths(d)]
+                if clean_decs:
+                    insight_parts.append("核心沉淀：" + "；".join(dict.fromkeys(clean_decs[:4])))
 
             themes.append(
                 CoreTheme(
@@ -528,30 +557,81 @@ JSON 格式:
         return themes
 
     # ------------------------------------------------------------------
-    # Helper: 提取话题标题与关键词标签
+    # Helper: 清洗路径噪音并提取干净的话题标题与标签
     # ------------------------------------------------------------------
-    def _extract_title_and_tags(self, text: str) -> tuple[str, list[str]]:
-        cleaned = re.sub(
-            r"^(我想讨论一下|我们来聊聊|我想做一个|请问|关于|讨论一下|研究一下)[：:，,\s]*",
-            "",
-            text.strip(),
-        )
-        first_clause = re.split(r"[。！？!?\n；;]", cleaned)[0].strip()
-        if len(first_clause) > 22:
-            title = first_clause[:22] + "..."
-        else:
-            title = first_clause or "未命名话题"
+    @staticmethod
+    def _strip_file_paths(text: str) -> str:
+        """剥离本地长文件路径（如微信截图路径、Downloads 路径）和 XML 标签，保留核心人类语言."""
+        cleaned = re.sub(r"<[^>]+>", " ", text)
+        cleaned = re.sub(r"(?:/Users/|/var/folders/|/private/|/home/)[^\s，。；：,;:!?\n]*", " ", cleaned)
+        cleaned = re.sub(r"https?://[^\s，。；：,;:!?\n]+", lambda m: m.group(0).split("/")[-1], cleaned)
+        cleaned = re.sub(r"\s+", " ", cleaned).strip(" ，。？！、：:;；-\n\t")
+        return cleaned
 
-        # 提取中英文关键词作为标签
+    def extract_session_title_and_tags(
+        self,
+        user_messages: list[str],
+        cwd: str = "",
+        agent_source: str = "",
+    ) -> tuple[str, list[str]]:
+        """从多轮用户发言与项目工作目录 (cwd) 中提炼清晰可读的 TopicSession 标题与标签."""
+        project_name = ""
+        if cwd:
+            parts = [p for p in Path(cwd).parts if p not in ("/", "Users", "xinference", "github", "run")]
+            if parts:
+                project_name = parts[-1]
+
+        best_sentence = ""
+        for msg in user_messages[:5]:
+            stripped = self._strip_file_paths(msg)
+            # 跳过纯过渡句
+            if len(stripped) >= 4 and not re.match(
+                r"^(能找到上一次|你能找到|恢复第|继续|按次落地|获取最新|updagte)", stripped
+            ):
+                best_sentence = stripped
+                break
+
+        if not best_sentence and user_messages:
+            best_sentence = self._strip_file_paths(user_messages[0])
+
+        title, tags = self._extract_title_and_tags(best_sentence or project_name or "工程探讨")
+        if project_name:
+            if project_name.lower() not in title.lower():
+                title = f"[{project_name}] {title}"
+            if project_name not in tags:
+                tags.insert(0, project_name)
+        if agent_source and agent_source not in tags:
+            tags.append(agent_source)
+        return title, tags
+
+    def _extract_title_and_tags(self, text: str) -> tuple[str, list[str]]:
+        cleaned = self._strip_file_paths(text)
+        cleaned = re.sub(
+            r"^(我想讨论一下|我们来聊聊|我想做一个|请问|关于|讨论一下|研究一下|我们换个话题|新开一个话题)[：:，,\s]*",
+            "",
+            cleaned,
+        )
+        first_clause = re.split(r"[。！？!?\n；;]", cleaned)[0].strip(" ，,：:*#")
+        if len(first_clause) > 26:
+            title = first_clause[:26] + "..."
+        else:
+            title = first_clause or "工程专题讨论"
+
         known_keywords = [
-            "Agent", "Session", "上下文", "记忆", "数据库", "SQLite", "PostgreSQL",
-            "向量检索", "架构", "量化", "交易", "Python", "前端", "后端", "RAG", "核心主题",
+            "xlite", "xgateway", "Flux", "SmartGate", "TileInfer", "XEnsemble",
+            "Agent", "Session", "上下文", "数据库", "SQLite", "Cloudflare", "D1",
+            "PostgreSQL", "向量检索", "架构", "并发", "负载均衡", "压测", "README",
+            "MapReduce", "量化", "交易", "Python", "Rust",
         ]
         tags: list[str] = []
         for kw in known_keywords:
             if kw.lower() in text.lower():
                 tags.append(kw)
         if not tags:
-            words = [w for w in tokenize(first_clause) if len(w) >= 2]
+            words = [
+                w
+                for w in tokenize(first_clause)
+                if len(w) >= 2 and w not in ("users", "xinference", "library", "containers")
+            ]
             tags = list(dict.fromkeys(words[:3]))
         return title, tags
