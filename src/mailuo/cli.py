@@ -15,8 +15,10 @@
 
 from __future__ import annotations
 
+import difflib
 import getpass
 import os
+import readline  # noqa: F401 — 启用终端方向键与历史记录支持
 import shlex
 import sys
 import tempfile
@@ -24,12 +26,13 @@ from pathlib import Path
 from typing import Optional
 
 from rich.console import Console
+from rich.markup import escape
 from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.table import Table
 
 from .engine import MailuoEngine, TurnResult
-from .models import RouteActionType
+from .models import RouteActionType, TopicSession
 from .storage import (
     clear_auth_profile,
     load_auth_profile,
@@ -38,6 +41,41 @@ from .storage import (
 )
 
 console = Console()
+
+KNOWN_COMMANDS = {
+    "ls": "ls",
+    "list": "ls",
+    "ll": "ls",
+    "themes": "themes",
+    "theme": "themes",
+    "sync": "sync",
+    "whoami": "whoami",
+    "who": "whoami",
+    "me": "whoami",
+    "pi": "pi",
+    "agy": "agy",
+    "new": "new",
+    "rm": "rm",
+    "del": "rm",
+    "help": "help",
+    "?": "help",
+    "q": "quit",
+    "quit": "quit",
+    "exit": "quit",
+}
+
+
+def resolve_short_command(cmd_word: str) -> Optional[str]:
+    """精确或容错匹配短命令（例如将打错的 `whooami` 自动识别为 `whoami`）."""
+    clean = cmd_word.lstrip("/").lower()
+    if clean in KNOWN_COMMANDS:
+        return KNOWN_COMMANDS[clean]
+    # 针对纯英文短词做编辑距离容错（如 whooami -> whoami, theems -> themes）
+    if clean.isalpha() and len(clean) <= 10:
+        matches = difflib.get_close_matches(clean, KNOWN_COMMANDS.keys(), n=1, cutoff=0.72)
+        if matches:
+            return KNOWN_COMMANDS[matches[0]]
+    return None
 
 
 def interactive_auth_flow(mode: str = "auto", preset_username: Optional[str] = None) -> dict:
@@ -52,7 +90,7 @@ def interactive_auth_flow(mode: str = "auto", preset_username: Optional[str] = N
     if mode == "auto":
         choice = (
             console.input(
-                "[bold yellow]请选择: [1] 注册新账号 (register)  [2] 登录已有账号 (login) [默认 1]: [/bold yellow]"
+                "[bold yellow]请选择: (1) 注册新账号  (2) 登录已有账号 [默认 1]: [/bold yellow]"
             )
             .strip()
             .lower()
@@ -98,7 +136,7 @@ def ensure_logged_in(db_target: str) -> None:
 
 
 def render_turn(user_text: str, result: TurnResult, storage_label: str = "") -> None:
-    console.print(f"\n[bold cyan]🧑 用户[/bold cyan]: {user_text}")
+    console.print(f"\n[bold cyan]🧑 用户[/bold cyan]: {escape(user_text)}")
 
     action_badge = {
         RouteActionType.NEW_TOPIC: "[bold green]🌱 新建话题 Session[/bold green]",
@@ -109,7 +147,7 @@ def render_turn(user_text: str, result: TurnResult, storage_label: str = "") -> 
     }.get(result.decision.action, str(result.decision.action))
 
     sess_title = (
-        f"《{result.active_session.title}》 ({result.active_session.id})"
+        f"《{escape(result.active_session.title)}》 ({result.active_session.id})"
         if result.active_session
         else "全局视图"
     )
@@ -118,17 +156,17 @@ def render_turn(user_text: str, result: TurnResult, storage_label: str = "") -> 
         pairs = [f"{k}:{v[:8]}" for k, v in result.active_session.external_sessions.items()]
         ext_bindings = f" | 绑定: [cyan]{', '.join(pairs)}[/cyan]"
 
-    db_note = f" | ☁️ [dim]{storage_label}[/dim]" if storage_label else ""
+    db_note = f" | ☁️ [dim]{escape(storage_label)}[/dim]" if storage_label else ""
     console.print(
         f"  [dim]└─ 脉络路由:[/dim] {action_badge} | [bold]{sess_title}[/bold]{ext_bindings}{db_note}\n"
-        f"  [dim]└─ 路由依据:[/dim] [italic]{result.decision.reason}[/italic]"
+        f"  [dim]└─ 路由依据:[/dim] [italic]{escape(result.decision.reason)}[/italic]"
     )
     if result.agent_execution:
         cmd_preview = " ".join(shlex.quote(c) for c in result.agent_execution.command[:6])
         if len(result.agent_execution.command) > 6:
             cmd_preview += " ..."
         console.print(
-            f"  [dim]└─ 外部 Agent ({result.agent_execution.agent_name}):[/dim] [green]{cmd_preview}[/green]"
+            f"  [dim]└─ 外部 Agent ({result.agent_execution.agent_name}):[/dim] [green]{escape(cmd_preview)}[/green]"
         )
 
     console.print(
@@ -212,75 +250,132 @@ def run_demo() -> None:
 def run_repl(engine: MailuoEngine) -> None:
     console.print(
         Panel.fit(
-            f"[bold cyan]mai (脉络)[/bold cyan] | 存储空间: [bold green]{engine.storage.db_label}[/bold green]\n"
+            f"[bold cyan]mai (脉络)[/bold cyan] | 存储空间: [bold green]{escape(engine.storage.db_label)}[/bold green]\n"
             "直接输入任何话即可（支持自动识别『顺便问一下...』、『把上次讨论XX的话题调出来』、『整理核心主题』）。\n"
-            "极简命令: [bold]ls[/bold] (话题列表) | [bold]themes[/bold] (整理核心主题) | [bold]pi[/bold] (拉起pi) | [bold]agy[/bold] (拉起agy) | [bold]sync[/bold] (同步历史) | [bold]whoami[/bold] (当前账号) | [bold]q[/bold] (退出)",
+            "极简命令: [bold]ls[/bold] (话题列表) | [bold]themes[/bold] (整理核心主题) | [bold]pi[/bold] (拉起pi) | [bold]agy[/bold] (拉起agy) | [bold]sync[/bold] (同步历史) | [bold]whoami[/bold] (当前账号) | [bold]q / Ctrl+C[/bold] (退出)",
             border_style="cyan",
         )
     )
 
+    # 缓存当前激活的话题，避免每次打印提示符都发起网络请求导致卡顿
+    cached_active: Optional[TopicSession] = None
+    try:
+        cached_active = engine.get_active_session()
+    except Exception:
+        cached_active = None
+
     while True:
-        active = engine.get_active_session()
-        topic_label = active.title if active else "新话题"
+        topic_label = cached_active.title[:18] if cached_active else "新话题"
+        # 注意：使用 escape 避免 rich.console.input 把 `[...]` 当作样式标签吞掉！
+        prompt_markup = f"\n[bold green]{escape(f'[{engine.storage.username} | {topic_label}]')} > [/bold green]"
         try:
-            text = console.input(
-                f"\n[bold green][{engine.storage.username} | {topic_label}] > [/bold green]"
-            ).strip()
+            text = console.input(prompt_markup).strip()
         except (EOFError, KeyboardInterrupt):
-            console.print("\n再见！")
+            console.print("\n[dim]👋 再见！[/dim]")
             break
 
         if not text:
             continue
-        if text in ("q", "quit", "exit", "/quit"):
-            break
-        if text in ("whoami", "/whoami"):
-            console.print(
-                f"[bold cyan]当前用户:[/bold cyan] {engine.storage.username} ({engine.storage.user_id}) | [bold green]{engine.storage.db_label}[/bold green]"
-            )
-            continue
-        if text in ("ls", "/ls", "/list"):
-            print_sessions_table(engine)
-            continue
-        if text in ("themes", "/themes"):
-            res = engine.chat("请把这些 session 整理成跟我有关的最核心主题")
-            render_turn("themes", res, engine.storage.db_label)
-            print_sessions_table(engine)
-            continue
-        if text in ("sync", "/sync"):
-            imported = engine.sync_external_sessions(source="all", limit_per_source=8)
-            console.print(
-                f"[bold green]☁️ 已同步 {len(imported)} 个本机 pi/agy 会话到 {engine.storage.db_label}！[/bold green]"
-            )
-            print_sessions_table(engine)
-            continue
-        if text == "pi" or text.startswith("pi "):
-            prompt_part = text[3:].strip()
-            if prompt_part:
-                res = engine.chat(prompt_part, agent_backend="pi")
-                render_turn(text, res, engine.storage.db_label)
-            else:
-                sess = engine.launch_agent_interactive("pi")
-                if sess:
-                    console.print(
-                        f"[bold green]✅ 已将刚才在 pi.dev 中的讨论同步至话题《{sess.title}》({sess.id})[/bold green]"
-                    )
-            continue
-        if text == "agy" or text.startswith("agy "):
-            prompt_part = text[4:].strip()
-            if prompt_part:
-                res = engine.chat(prompt_part, agent_backend="agy")
-                render_turn(text, res, engine.storage.db_label)
-            else:
-                sess = engine.launch_agent_interactive("agy")
-                if sess:
-                    console.print(
-                        f"[bold green]✅ 已将刚才在 Google agy 中的讨论同步至话题《{sess.title}》({sess.id})[/bold green]"
-                    )
-            continue
 
-        res = engine.chat(text)
-        render_turn(text, res, engine.storage.db_label)
+        parts = text.split(maxsplit=1)
+        first_word = parts[0]
+        rest_arg = parts[1].strip() if len(parts) > 1 else ""
+        matched_cmd = resolve_short_command(first_word) if not rest_arg or first_word.lower().lstrip("/") in ("pi", "agy", "new", "rm", "del", "sync") else None
+
+        try:
+            if matched_cmd == "quit":
+                console.print("[dim]👋 再见！[/dim]")
+                break
+
+            if matched_cmd == "help":
+                console.print(Panel.fit(HELP_TEXT, border_style="cyan"))
+                continue
+
+            if matched_cmd == "whoami":
+                console.print(
+                    f"[bold cyan]👤 当前用户:[/bold cyan] {engine.storage.username} ({engine.storage.user_id}) | [bold green]{escape(engine.storage.db_label)}[/bold green]"
+                )
+                continue
+
+            if matched_cmd == "ls":
+                print_sessions_table(engine)
+                continue
+
+            if matched_cmd == "themes":
+                res = engine.chat("请把这些 session 整理成跟我有关的最核心主题")
+                render_turn("themes", res, engine.storage.db_label)
+                print_sessions_table(engine)
+                continue
+
+            if matched_cmd == "sync":
+                src = rest_arg if rest_arg in ("all", "pi", "agy") else "all"
+                imported = engine.sync_external_sessions(source=src, limit_per_source=10)
+                console.print(
+                    f"[bold green]☁️ 已同步 {len(imported)} 个本机 ({src}) 会话到 {escape(engine.storage.db_label)}！[/bold green]"
+                )
+                print_sessions_table(engine)
+                continue
+
+            if matched_cmd == "new":
+                if rest_arg:
+                    res = engine.chat(rest_arg, force_new_topic=True)
+                    cached_active = res.active_session
+                    render_turn(text, res, engine.storage.db_label)
+                else:
+                    engine.storage.set_active_session_id(None)
+                    cached_active = None
+                    console.print("[bold green]🌱 已重置为空白话题状态。[/bold green]")
+                continue
+
+            if matched_cmd == "rm" and rest_arg:
+                engine.storage.delete_session(rest_arg)
+                if cached_active and cached_active.id == rest_arg:
+                    cached_active = None
+                console.print(f"[bold yellow]🗑️ 已删除话题 Session: {escape(rest_arg)}[/bold yellow]")
+                continue
+
+            if matched_cmd == "pi":
+                if rest_arg:
+                    res = engine.chat(rest_arg, agent_backend="pi")
+                    cached_active = res.active_session
+                    render_turn(text, res, engine.storage.db_label)
+                else:
+                    sess = engine.launch_agent_interactive("pi")
+                    if sess:
+                        cached_active = sess
+                        console.print(
+                            f"[bold green]✅ 已将刚才在 pi.dev 中的讨论同步至话题《{escape(sess.title)}》({sess.id})[/bold green]"
+                        )
+                continue
+
+            if matched_cmd == "agy":
+                if rest_arg:
+                    res = engine.chat(rest_arg, agent_backend="agy")
+                    cached_active = res.active_session
+                    render_turn(text, res, engine.storage.db_label)
+                else:
+                    sess = engine.launch_agent_interactive("agy")
+                    if sess:
+                        cached_active = sess
+                        console.print(
+                            f"[bold green]✅ 已将刚才在 Google agy 中的讨论同步至话题《{escape(sess.title)}》({sess.id})[/bold green]"
+                        )
+                continue
+
+            # 防止用户随手敲错单个短英文单词（比如 `lls`, `whoo`）被误当成新话题发往云端
+            if not rest_arg and text.isascii() and text.isalpha() and len(text) <= 8:
+                console.print(
+                    f"[yellow]未识别的短命令 `{escape(text)}`。输入 `help` 查看命令列表，或输入完整句子开始讨论话题。[/yellow]"
+                )
+                continue
+
+            res = engine.chat(text)
+            cached_active = res.active_session
+            render_turn(text, res, engine.storage.db_label)
+
+        except KeyboardInterrupt:
+            console.print("\n[yellow]⚡ 已取消当前操作（再按一次 Ctrl+C 或输入 q 即可退出 mai）[/yellow]")
+            continue
 
 
 HELP_TEXT = """[bold cyan]mai (脉络 Mailuo) — 多用户云端隔离极简 CLI (Cloudflare D1)[/bold cyan]
@@ -297,13 +392,15 @@ HELP_TEXT = """[bold cyan]mai (脉络 Mailuo) — 多用户云端隔离极简 CL
   [bold green]mai pi [提问内容][/bold green]             使用 [bold]pi.dev[/bold] 来讨论话题（退出后自动提取你聊的内容生成脉络摘要）
   [bold green]mai agy [提问内容][/bold green]            使用 [bold]Google agy[/bold] 来讨论话题（退出后自动提取你聊的内容生成脉络摘要）
   [bold green]mai ls[/bold green]                        查看当前账号下的所有具体话题 Sessions
+  [bold green]mai new [新话题内容][/bold green]          开启全新话题（或重置当前激活指针）
+  [bold green]mai rm <session_id>[/bold green]           删除指定的话题 Session
   [bold green]mai themes[/bold green]                    把当前账号下的零散 Session 整理成『最核心主题』
   [bold green]mai sync[/bold green]                      将本机 pi.dev 和 agy 的历史记录一键同步至当前账号下
   [bold green]mai demo[/bold green]                      运行自动化演示
 """
 
 
-def main() -> None:
+def _main_inner() -> None:
     db_target = os.getenv("MAILUO_DB", "d1")
     args = sys.argv[1:]
 
@@ -352,7 +449,9 @@ def main() -> None:
         console.print("[bold yellow]已清除本机登录凭证。[/bold yellow]")
         return
 
-    if cmd in ("whoami", "me"):
+    resolved = resolve_short_command(cmd) if not rest else None
+
+    if cmd in ("whoami", "me") or resolved == "whoami":
         prof = load_auth_profile()
         if prof:
             console.print(
@@ -363,21 +462,20 @@ def main() -> None:
             console.print("[yellow]当前未登录云端账号。请运行 `mai register` 或 `mai login`。[/yellow]")
         return
 
-    # 其他所有命令：确保已登录账号
     ensure_logged_in(db_target)
     engine = MailuoEngine(db_path=db_target)
 
-    if cmd in ("ls", "list", "--list"):
+    if cmd in ("ls", "list", "--list") or resolved == "ls":
         print_sessions_table(engine)
         return
 
     if cmd in ("rm", "del", "delete") and rest:
         engine.storage.delete_session(rest)
-        console.print(f"[bold yellow]🗑️ 已删除话题 Session: {rest}[/bold yellow]")
+        console.print(f"[bold yellow]🗑️ 已删除话题 Session: {escape(rest)}[/bold yellow]")
         print_sessions_table(engine)
         return
 
-    if cmd in ("new", "--new"):
+    if cmd in ("new", "--new") or resolved == "new":
         if rest:
             res = engine.chat(rest, force_new_topic=True)
             render_turn(f"mai new {rest}", res, engine.storage.db_label)
@@ -386,17 +484,17 @@ def main() -> None:
             console.print("[bold green]🌱 已重置当前激活指针，下一次对话或拉起 `mai pi` / `mai agy` 将开启全新话题！[/bold green]")
         return
 
-    if cmd in ("themes", "theme", "--themes"):
+    if cmd in ("themes", "theme", "--themes") or resolved == "themes":
         res = engine.chat("请把这些 session 整理成跟我有关的最核心主题")
         render_turn("mai themes", res, engine.storage.db_label)
         print_sessions_table(engine)
         return
 
-    if cmd in ("sync", "--sync"):
+    if cmd in ("sync", "--sync") or resolved == "sync":
         src = args[1] if len(args) > 1 else "all"
         imported = engine.sync_external_sessions(source=src, limit_per_source=10)
         console.print(
-            f"[bold green]☁️ 已成功将 {len(imported)} 个本机 ({src}) 会话同步至 {engine.storage.db_label}！[/bold green]"
+            f"[bold green]☁️ 已成功将 {len(imported)} 个本机 ({src}) 会话同步至 {escape(engine.storage.db_label)}！[/bold green]"
         )
         print_sessions_table(engine)
         return
@@ -409,7 +507,7 @@ def main() -> None:
             sess = engine.launch_agent_interactive("pi")
             if sess:
                 console.print(
-                    f"[bold green]✅ 已将刚才在 pi.dev 中的讨论同步至话题《{sess.title}》({sess.id}) — {engine.storage.db_label}[/bold green]"
+                    f"[bold green]✅ 已将刚才在 pi.dev 中的讨论同步至话题《{escape(sess.title)}》({sess.id}) — {escape(engine.storage.db_label)}[/bold green]"
                 )
         return
 
@@ -421,14 +519,21 @@ def main() -> None:
             sess = engine.launch_agent_interactive("agy")
             if sess:
                 console.print(
-                    f"[bold green]✅ 已将刚才在 Google agy 中的讨论同步至话题《{sess.title}》({sess.id}) — {engine.storage.db_label}[/bold green]"
+                    f"[bold green]✅ 已将刚才在 Google agy 中的讨论同步至话题《{escape(sess.title)}》({sess.id}) — {escape(engine.storage.db_label)}[/bold green]"
                 )
         return
 
-    # 其他情况：直接把参数当做自然语言对话输入！
     full_input = " ".join(args).strip()
     res = engine.chat(full_input)
     render_turn(full_input, res, engine.storage.db_label)
+
+
+def main() -> None:
+    try:
+        _main_inner()
+    except KeyboardInterrupt:
+        console.print("\n[dim]👋 已退出 mai。[/dim]")
+        sys.exit(0)
 
 
 if __name__ == "__main__":
