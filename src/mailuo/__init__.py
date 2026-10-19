@@ -1,3 +1,3 @@
-"""Mailuo (脉络): Topic-Centric Agent Session & Context Manager."""
+"""Mailuo (`mai`): Topic-Centric Agent Session & Core Theme Manager."""
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
