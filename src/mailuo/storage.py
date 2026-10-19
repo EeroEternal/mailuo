@@ -49,14 +49,21 @@ def cosine_similarity(vec_a: list[float], vec_b: list[float]) -> float:
 # 用户注册、登录与本地凭证管理 (`~/.mailuo/auth.json`)
 # ------------------------------------------------------------------
 def load_auth_profile(config_path: Path = AUTH_CONFIG_PATH) -> Optional[dict[str, Any]]:
-    if not config_path.exists():
-        return None
-    try:
-        data = json.loads(config_path.read_text(encoding="utf-8"))
-        if data.get("token") and data.get("username"):
-            return data
-    except Exception:
-        pass
+    if config_path.exists():
+        try:
+            data = json.loads(config_path.read_text(encoding="utf-8"))
+            if data.get("token") and data.get("username"):
+                return data
+        except Exception:
+            pass
+    env_token = os.getenv("MAILUO_TOKEN")
+    if env_token:
+        return {
+            "user_id": os.getenv("MAILUO_USER_ID", "usr_f622c5bf43"),
+            "username": os.getenv("MAILUO_USERNAME", "lipi"),
+            "token": env_token,
+            "gateway_url": os.getenv("MAILUO_GATEWAY_URL", DEFAULT_GATEWAY_URL),
+        }
     return None
 
 
