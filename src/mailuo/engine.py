@@ -67,7 +67,7 @@ class MailuoEngine:
     def switch_session(self, session_id: str) -> TopicSession:
         sess = self.storage.get_session(session_id)
         if not sess:
-            raise ValueError(f"未找到 ID 为 {session_id} 的话题 Session")
+            raise ValueError(f"Topic session not found: {session_id}")
         current = self.get_active_session()
         if current and current.id != sess.id and current.status == SessionStatus.ACTIVE:
             current.status = SessionStatus.PAUSED
@@ -104,7 +104,7 @@ class MailuoEngine:
         return sess
 
     # ------------------------------------------------------------------
-    # 核心对话入口：自动分流、召回、隔离、拉起外部 Agent (pi / agy) 与整理
+    # Core Chat Entrypoint
     # ------------------------------------------------------------------
     def chat(
         self,
@@ -115,19 +115,14 @@ class MailuoEngine:
         force_new_topic: bool = False,
         cwd: Optional[str | Path] = None,
     ) -> TurnResult:
-        """执行一轮对话.
-
-        参数:
-            agent_backend: "mailuo" (内置引擎) | "pi" (拉起 pi.dev) | "agy" (拉起 Google Antigravity)
-            interactive_agent: 若为 True 且指定了 pi/agy，则直接拉起其交互式 TUI 会话并在退出后同步记录
-        """
+        """Execute a single turn of conversation."""
         active_sess = self.get_active_session()
 
         if force_tangent and active_sess is not None:
             decision = RouteDecision(
                 action=RouteActionType.SIDE_TANGENT,
                 target_session_id=active_sess.id,
-                reason=f"用户显式指定临时穿插提问（Side-Tangent），隔离于《{active_sess.title}》之外",
+                reason=f"Explicit Side-Tangent isolated from active topic [{active_sess.title}]",
             )
         elif force_new_topic:
             title, tags = self.llm._extract_title_and_tags(user_input)
@@ -135,20 +130,20 @@ class MailuoEngine:
                 action=RouteActionType.NEW_TOPIC,
                 new_topic_title=title,
                 new_topic_tags=tags,
-                reason="用户显式开启新话题 Session",
+                reason="Explicitly started a new topic session",
             )
         else:
             decision = self.llm.route_user_input(user_input, active_sess, self.storage)
 
-        # 分支 1：整理核心主题 (CONSOLIDATE)
+        # Branch 1: Consolidate Core Themes (CONSOLIDATE)
         if decision.action == RouteActionType.CONSOLIDATE:
             themes = self.consolidate_themes()
-            lines = [f"已将您的所有跨 Agent 历史话题整理归纳为 **{len(themes)} 个核心主题 (Core Themes)**：\n"]
+            lines = [f"Consolidated all cross-agent sessions into **{len(themes)} Core Themes**:\n"]
             for idx, th in enumerate(themes, 1):
                 lines.append(
                     f"### {idx}. {th.name} (`{th.id}`)\n"
-                    f"- **关联具体话题数**: {len(th.session_ids)} 个 (`{', '.join(th.session_ids)}`)\n"
-                    f"- **跨会话核心脉络**: {th.consolidated_insight}\n"
+                    f"- **Linked Sessions**: {len(th.session_ids)} (`{', '.join(th.session_ids)}`)\n"
+                    f"- **Core Insight**: {th.consolidated_insight}\n"
                 )
             return TurnResult(
                 decision=decision,
@@ -158,7 +153,7 @@ class MailuoEngine:
                 consolidated_themes=themes,
             )
 
-        # 分支 2：召回并切换到历史话题 (SWITCH_EXISTING)
+        # Branch 2: Recall and switch to an existing topic session (SWITCH_EXISTING)
         if decision.action == RouteActionType.SWITCH_EXISTING and decision.target_session_id:
             target_sess = self.switch_session(decision.target_session_id)
             theme = (
@@ -177,13 +172,12 @@ class MailuoEngine:
                 is_tangent=False,
                 recalled_from_search=True,
             )
-            # 如果用户要求切回历史话题同时直接拉起交互式 pi 或 agy
             exec_res: Optional[AgentExecutionResult] = None
             if interactive_agent and agent_backend in ("pi", "agy"):
                 exec_res = self._invoke_external_agent(
                     agent_backend=agent_backend,
                     session=target_sess,
-                    prompt="请基于当前恢复的脉络上下文继续我们的讨论。",
+                    prompt="Continue our discussion based on the restored topic context.",
                     theme=theme,
                     recent_messages=recent_msgs,
                     is_tangent=False,

@@ -76,19 +76,20 @@ class LLMBackend:
         """
         text = user_input.strip()
 
-        # 1) 检测“整理核心主题”意图
+        # 1) Detect "consolidate core themes" intent
         consolidate_patterns = [
             r"(整理|归纳|汇总|合并|提炼).*(核心主题|所有话题|session|会话|脉络)",
             r"把.*(session|会话|话题).*(整理|合并|聚类)",
+            r"(consolidate|cluster|summarize|organize).*(theme|session|topic)",
         ]
         for pat in consolidate_patterns:
             if re.search(pat, text, re.IGNORECASE):
                 return RouteDecision(
                     action=RouteActionType.CONSOLIDATE,
-                    reason="识别到用户希望将零散的话题 Session 聚类整理为核心主题",
+                    reason="Detected request to consolidate scattered sessions into Core Themes",
                 )
 
-        # 2) 检测“调出/切换上次讨论的某个话题 Session”意图
+        # 2) Detect "recall/switch to previous topic session" intent
         recall_match = re.search(
             r"(?:上次|之前|前面|早些时候)?(?:我们)?(?:讨论|聊|研究|设计|说过)的?(?:那个|关于)?(.+?)(?:的?(?:话题|session|会话|内容|脉络))?(?:你?(?:可以|能|帮我)?(?:调出来|切过去|切换|找出来|恢复|继续聊)|呢)",
             text,
@@ -96,7 +97,7 @@ class LLMBackend:
         )
         if not recall_match:
             recall_match = re.search(
-                r"(?:调出|切换到|回到|找回|加载)(?:上次|之前)?(?:讨论|聊)?(?:关于)?(.+?)(?:的?(?:话题|session|会话))?$",
+                r"(?:调出|切换到|回到|找回|加载|recall|switch to|load)(?:上次|之前)?(?:讨论|聊)?(?:关于)?(.+?)(?:的?(?:话题|session|会话|topic))?$",
                 text,
                 re.IGNORECASE,
             )
@@ -114,12 +115,12 @@ class LLMBackend:
                     action=RouteActionType.SWITCH_EXISTING,
                     target_session_id=best_sess.id,
                     search_query=query_topic,
-                    reason=f"根据『{query_topic}』检索并召回历史话题 Session: 《{best_sess.title}》 (匹配度 {score:.2f})",
+                    reason=f"Recalled existing topic session [{best_sess.title}] for query '{query_topic}' (score {score:.2f})",
                 )
 
-        # 3) 检测“临时穿插/顺便问一下（防止弄乱当前话题）”意图
+        # 3) Detect "side-tangent / ephemeral question" intent
         tangent_patterns = [
-            r"^(顺便问|题外话|插一句|穿插一个|先不聊这个|临时问|突然想到|歪个楼|btw)",
+            r"^(顺便问|题外话|插一句|穿插一个|先不聊这个|临时问|突然想到|歪个楼|btw|by the way|quick question)",
             r"(顺便帮我|穿插一下|不要影响当前|别弄乱当前)",
         ]
         if active_session is not None:
@@ -128,29 +129,29 @@ class LLMBackend:
                     return RouteDecision(
                         action=RouteActionType.SIDE_TANGENT,
                         target_session_id=active_session.id,
-                        reason=f"检测到穿插提问，已开启隔离沙箱（Side-Tangent），绝不污染当前主话题《{active_session.title}》的上下文",
+                        reason=f"Side-Tangent sandbox enabled; isolated from active topic [{active_session.title}]",
                     )
 
-        # 4) 如果配置了在线 LLM，让 LLM 做更细粒度的语义漂移检测（是否偏离当前具体内容）
+        # 4) If live LLM is configured, use LLM for semantic drift routing
         if self._client is not None:
             llm_decision = self._route_via_llm(text, active_session, storage)
             if llm_decision is not None:
                 return llm_decision
 
-        # 5) 启发式话题漂移与新建判定
+        # 5) Heuristic topic drift and new topic detection
         if active_session is None:
             title, tags = self._extract_title_and_tags(text)
             return RouteDecision(
                 action=RouteActionType.NEW_TOPIC,
                 new_topic_title=title,
                 new_topic_tags=tags,
-                reason="当前无激活话题，自动为您创建针对该具体内容的专属 Session",
+                reason="No active topic session; created a new dedicated topic session",
             )
 
-        # 检查是否显式要求开启新话题
         new_topic_match = re.search(
-            r"^(?:我们?)?(?:换个话题|聊个新的|新开一个话题|开启新话题|讨论另一个问题|来探讨一下)[：:，,\s]*(.+)",
+            r"^(?:我们?)?(?:换个话题|聊个新的|新开一个话题|开启新话题|讨论另一个问题|来探讨一下|new topic)[：:，,\s]*(.+)",
             text,
+            re.IGNORECASE,
         )
         if new_topic_match:
             core_text = new_topic_match.group(1)
@@ -159,10 +160,9 @@ class LLMBackend:
                 action=RouteActionType.NEW_TOPIC,
                 new_topic_title=title,
                 new_topic_tags=tags,
-                reason=f"识别到切换新讨论方向，已从《{active_session.title}》剥离并新建独立 Session",
+                reason=f"Switched to a new topic direction from [{active_session.title}]",
             )
 
-        # 检查输入是否与历史某个非当前 Session 高度重合，而与当前 Session 完全无关
         all_candidates = storage.search_sessions(
             query=text, query_embedding=self.embed(text), top_k=3
         )
@@ -172,7 +172,6 @@ class LLMBackend:
                 current_score = sc
                 break
 
-        # 如果跟当前话题完全不沾边，且看起来是一个独立工具/代码杂项请求，自动走 SIDE_TANGENT 隔离
         unrelated_utility_patterns = [
             r"(写个正则|翻译一下|汇率|天气|命令行怎么写|报错了怎么修|算一下)",
         ]
@@ -182,15 +181,14 @@ class LLMBackend:
                     action=RouteActionType.SIDE_TANGENT,
                     target_session_id=active_session.id,
                     reason=(
-                        f"检测到与当前主话题《{active_session.title}》无关的穿插杂项提问，"
-                        "已自动采用隔离上下文回答，保持主话题纯净"
+                        f"Detected unrelated utility question; isolated from active topic [{active_session.title}]"
                     ),
                 )
 
         return RouteDecision(
             action=RouteActionType.CONTINUE,
             target_session_id=active_session.id,
-            reason=f"延续当前具体话题《{active_session.title}》",
+            reason=f"Continuing active topic [{active_session.title}]",
         )
 
     def _route_via_llm(
@@ -212,20 +210,20 @@ class LLMBackend:
             if active_session
             else None
         )
-        prompt = f"""你是一个面向『具体话题 Session 管理』的路由器。
-当前激活的话题 Session: {json.dumps(active_info, ensure_ascii=False)}
-已有的历史话题列表: {json.dumps(sessions_brief, ensure_ascii=False)}
-用户最新输入: "{user_input}"
+        prompt = f"""You are a topic-centric session router.
+Active Topic Session: {json.dumps(active_info, ensure_ascii=False)}
+Existing Topic Sessions: {json.dumps(sessions_brief, ensure_ascii=False)}
+Latest User Input: "{user_input}"
 
-请判断应该采取哪种路由动作，返回严格 JSON：
-- "continue": 继续当前激活的话题
-- "side_tangent": 用户在当前话题下穿插了一个临时/无关的小问题，需要隔离回答以免把当前话题搞杂乱
-- "switch": 用户想调出或回到列表中的某个历史话题（填 target_session_id）
-- "new_topic": 用户开启了一个全新的、值得长期深入讨论的具体话题（填 new_topic_title 和 new_topic_tags）
-- "consolidate": 用户要求整理、合并核心主题
+Choose the routing action and return strict JSON:
+- "continue": Continue the active topic
+- "side_tangent": Ephemeral side question that should be isolated so it does not pollute the active topic
+- "switch": Recall/switch to an existing session from the list (provide target_session_id)
+- "new_topic": Start a brand-new topic session (provide new_topic_title and new_topic_tags)
+- "consolidate": Consolidate sessions into Core Themes
 
-JSON 格式:
-{{"action": "continue|side_tangent|switch|new_topic|consolidate", "target_session_id": null, "new_topic_title": null, "new_topic_tags": [], "reason": "简短原因"}}"""
+JSON format:
+{{"action": "continue|side_tangent|switch|new_topic|consolidate", "target_session_id": null, "new_topic_title": null, "new_topic_tags": [], "reason": "brief reason in English"}}"""
         try:
             resp = self._client.chat.completions.create(
                 model=self.model,
@@ -245,7 +243,7 @@ JSON 格式:
             return None
 
     # ------------------------------------------------------------------
-    # 2. 对话生成 (Chat Response with Context Assembly)
+    # 2. Chat Response with Context Assembly
     # ------------------------------------------------------------------
     def generate_reply(
         self,
@@ -256,25 +254,25 @@ JSON 格式:
         is_tangent: bool = False,
         recalled_from_search: bool = False,
     ) -> str:
-        """组装纯净的话题上下文并生成 Agent 回复."""
+        """Assemble clean topic context and generate Agent reply."""
         if self._client is not None:
             try:
                 sys_parts = [
-                    f"你正在与用户围绕具体话题《{session.title}》进行深度讨论。",
+                    f"You are discussing the topic [{session.title}] with the user.",
                 ]
                 if theme:
                     sys_parts.append(
-                        f"所属核心主题：《{theme.name}》（长期核心共识：{theme.consolidated_insight}）"
+                        f"Core Theme: [{theme.name}] (Insight: {theme.consolidated_insight})"
                     )
                 if session.summary:
-                    sys_parts.append(f"当前话题已沉淀摘要：{session.summary}")
+                    sys_parts.append(f"Current Topic Summary: {session.summary}")
                 if session.key_decisions:
                     sys_parts.append(
-                        "已达成的关键结论：" + "；".join(session.key_decisions)
+                        "Key Decisions: " + "; ".join(session.key_decisions)
                     )
                 if is_tangent:
                     sys_parts.append(
-                        "【注意】当前这条提问被识别为『临时穿插提问（Side-Tangent）』，请简洁直接回答该穿插问题，提醒用户该回答已被隔离，不会污染主话题上下文。"
+                        "[NOTE] This question is an isolated Side-Tangent. Answer concisely without altering the main topic."
                     )
 
                 messages_payload: list[dict[str, str]] = [
@@ -291,7 +289,7 @@ JSON 格式:
                 )
                 return resp.choices[0].message.content or ""
             except Exception as exc:
-                return f"[LLM 调用异常，已切换本地脉络引擎响应: {exc}]\n" + self._local_reply(
+                return f"[LLM fallback to local engine: {exc}]\n" + self._local_reply(
                     user_input, session, recent_messages, theme, is_tangent, recalled_from_search
                 )
 
@@ -312,35 +310,35 @@ JSON 格式:
             decisions_str = (
                 "\n".join(f"  - {d}" for d in session.key_decisions)
                 if session.key_decisions
-                else "  - （尚无固化的关键结论，可继续深入）"
+                else "  - (No recorded decisions yet)"
             )
             questions_str = (
                 "\n".join(f"  - {q}" for q in session.open_questions)
                 if session.open_questions
-                else "  - （暂无待办问题）"
+                else "  - (No open questions)"
             )
             return (
-                f"已为您调出历史话题 Session **《{session.title}》** (`{session.id}`)！\n\n"
-                f"**上次讨论脉络摘要**：\n> {session.summary or '我们已经开启了该话题的初步探讨。'}\n\n"
-                f"**已沉淀的关键结论**：\n{decisions_str}\n\n"
-                f"**待继续推进的问题**：\n{questions_str}\n\n"
-                f"现在上下文已无缝恢复到该具体话题，我们可以接着聊！"
+                f"Recalled topic session **[{session.title}]** (`{session.id}`).\n\n"
+                f"**Session Summary**:\n> {session.summary or 'Initial discussion started.'}\n\n"
+                f"**Key Decisions**:\n{decisions_str}\n\n"
+                f"**Open Questions**:\n{questions_str}\n\n"
+                f"Context restored to this topic."
             )
 
         if is_tangent:
             return (
-                f"*(已通过 **Side-Tangent 隔离沙箱** 处理此穿插提问，不会写入主话题《{session.title}》的长期记忆)*\n\n"
-                f"针对您的临时问题「{user_input}」：\n"
-                f"已完成快速解答。随时可以继续回到刚才关于 **《{session.title}》** 的核心讨论中！"
+                f"*(Handled via **Side-Tangent Sandbox** — isolated from main topic [{session.title}])* \n\n"
+                f"Regarding `{user_input}`:\n"
+                f"Recorded as an ephemeral side-query. Main topic **[{session.title}]** remains clean."
             )
 
-        theme_note = f"（归属核心主题：**{theme.name}**）" if theme else ""
+        theme_note = f" (Core Theme: **{theme.name}**)" if theme else ""
         turn_count = len([m for m in recent_messages if m.role == "user"]) + 1
         return (
-            f"围绕具体话题 **《{session.title}》**{theme_note}（第 {turn_count} 轮深入讨论）：\n"
-            f"已记录并分析您的观点：「{user_input}」。\n"
-            f"- 当前话题标签：`{', '.join(session.tags) if session.tags else '通用讨论'}`\n"
-            f"- 话题上下文保持纯净，未混入无关杂项。"
+            f"Topic **[{session.title}]**{theme_note} (Turn #{turn_count}):\n"
+            f"Recorded input: `{user_input}`.\n"
+            f"- Tags: `{', '.join(session.tags) if session.tags else 'general'}`\n"
+            f"- Context state updated."
         )
 
     # ------------------------------------------------------------------

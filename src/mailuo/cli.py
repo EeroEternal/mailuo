@@ -1,16 +1,16 @@
-"""Simplified Command-Line Interface for Mailuo (脉络 `mai` — 多用户注册隔离 + Cloudflare D1 云端存储).
+"""Simplified Command-Line Interface for Mailuo (`mai` — Multi-User Cloudflare D1 Storage).
 
-极简命令用法：
-  mai register [用户名]    # 注册个人专属脉络账号（数据按账号严格隔离在 Cloudflare D1）
-  mai login [用户名]       # 在新机器上登录已有账号，立即同步恢复所有话题脉络
-  mai whoami               # 查看当前登录的账号与云端连接状态
-  mai                      # 进入交互式对话（若未注册会自动引导注册/登录）
-  mai "一句话或问题"       # 直接对话（自动判断延续话题 / 临时穿插隔离 / 调出旧话题 / 整理核心主题）
-  mai pi [提示词]          # 在当前话题脉络下拉起 pi.dev (退出后自动同步记录到当前账号的 Cloudflare D1)
-  mai agy [提示词]         # 在当前话题脉络下拉起 Google Antigravity (`agy`)
-  mai ls                   # 查看当前账号下的所有话题 Sessions 列表
-  mai themes               # 一键把所有零散 Session 整理为核心主题 (Core Themes)
-  mai sync                 # 一键把本机 pi.dev 和 agy 的历史记录同步到当前账号的 Cloudflare D1
+Usage:
+  mai register [username]  # Register a new account (strictly isolated in Cloudflare D1)
+  mai login [username]     # Log into an existing account on any machine
+  mai whoami               # Show current user & cloud connection status
+  mai                      # Start interactive REPL
+  mai "<message>"          # Send a single message (auto-route / side-tangent / recall / consolidate)
+  mai pi [prompt]          # Launch pi.dev under current topic context (auto-sync on exit)
+  mai agy [prompt]         # Launch Google Antigravity (`agy`) under current topic context
+  mai ls                   # List all topic sessions under current account
+  mai themes               # Consolidate scattered sessions into Core Themes
+  mai sync                 # Scan & upload local pi.dev and agy sessions to Cloudflare D1
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from __future__ import annotations
 import difflib
 import getpass
 import os
-import readline  # noqa: F401 — 启用终端方向键与历史记录支持
+import readline  # noqa: F401 — enable terminal arrow keys & history
 import shlex
 import sys
 import tempfile
@@ -67,11 +67,10 @@ KNOWN_COMMANDS = {
 
 
 def resolve_short_command(cmd_word: str) -> Optional[str]:
-    """精确或容错匹配短命令（例如将打错的 `whooami` 自动识别为 `whoami`）."""
+    """Match exact or fuzzy short commands (e.g. `whooami` -> `whoami`)."""
     clean = cmd_word.lstrip("/").lower()
     if clean in KNOWN_COMMANDS:
         return KNOWN_COMMANDS[clean]
-    # 针对纯英文短词做编辑距离容错（如 whooami -> whoami, theems -> themes）
     if clean.isalpha() and len(clean) <= 10:
         matches = difflib.get_close_matches(clean, KNOWN_COMMANDS.keys(), n=1, cutoff=0.72)
         if matches:
@@ -80,94 +79,94 @@ def resolve_short_command(cmd_word: str) -> Optional[str]:
 
 
 def interactive_auth_flow(mode: str = "auto", preset_username: Optional[str] = None) -> dict:
-    """引导用户完成注册或登录，确保每个人的数据在 Cloudflare D1 中独立隔离."""
+    """Interactive registration / login flow for multi-tenant Cloudflare D1 isolation."""
     console.print(
         Panel.fit(
-            "[bold cyan]🔐 Mailuo (`mai`) 账号注册 / 登录[/bold cyan]\n"
-            "每个账号在 Cloudflare D1 云端拥有完全独立的脉络空间，不同机器登录同一账号即可无缝接续，不同人的数据绝不串号。",
+            "[bold cyan]🔐 mai Authentication[/bold cyan]\n"
+            "Each account has an isolated workspace in Cloudflare D1. Log in with the same account on any machine to sync your sessions.",
             border_style="cyan",
         )
     )
     if mode == "auto":
         choice = (
             console.input(
-                "[bold yellow]请选择: (1) 注册新账号  (2) 登录已有账号 [默认 1]: [/bold yellow]"
+                "[bold yellow]Select: (1) Register new account  (2) Login existing account [default 1]: [/bold yellow]"
             )
             .strip()
             .lower()
         )
         mode = "login" if choice in ("2", "login", "l") else "register"
 
-    username = preset_username or console.input("[bold green]用户名 (username): [/bold green]").strip()
-    password = getpass.getpass("密码 (至少4位，输入不回显): ").strip()
+    username = preset_username or console.input("[bold green]Username: [/bold green]").strip()
+    password = getpass.getpass("Password (min 4 chars, hidden): ").strip()
     if not password:
-        password = console.input("[bold green]密码 (至少4位): [/bold green]").strip()
+        password = console.input("[bold green]Password (min 4 chars): [/bold green]").strip()
 
     if mode == "register":
         try:
             profile = register_user(username, password)
             console.print(
-                f"[bold green]✅ 注册成功！当前登录账号: {profile['username']} ({profile['user_id']})[/bold green]"
+                f"[bold green]✅ Registered & logged in as: {profile['username']} ({profile['user_id']})[/bold green]"
             )
             return profile
         except RuntimeError as e:
-            if "已被注册" in str(e):
-                console.print(f"[yellow]{e}，正在尝试为您直接登录...[/yellow]")
+            if "已被注册" in str(e) or "already" in str(e).lower():
+                console.print(f"[yellow]{e} — attempting login instead...[/yellow]")
                 profile = login_user(username, password)
                 console.print(
-                    f"[bold green]✅ 登录成功！当前账号: {profile['username']} ({profile['user_id']})[/bold green]"
+                    f"[bold green]✅ Logged in as: {profile['username']} ({profile['user_id']})[/bold green]"
                 )
                 return profile
             raise
     else:
         profile = login_user(username, password)
         console.print(
-            f"[bold green]✅ 登录成功！当前账号: {profile['username']} ({profile['user_id']})[/bold green]"
+            f"[bold green]✅ Logged in as: {profile['username']} ({profile['user_id']})[/bold green]"
         )
         return profile
 
 
 def ensure_logged_in(db_target: str) -> None:
-    """当使用云端 D1 且本机尚未注册/登录时，自动触发引导注册流程."""
+    """Prompt for registration/login if using Cloudflare D1 and no local credentials exist."""
     if db_target != "d1":
         return
     if load_auth_profile() is None and sys.stdin.isatty():
-        console.print("[yellow]检测到当前机器尚未登录 `mai` 脉络账号，请先完成快速注册或登录：[/yellow]")
+        console.print("[yellow]No active `mai` account found on this machine. Please register or log in:[/yellow]")
         interactive_auth_flow(mode="auto")
 
 
 def render_turn(user_text: str, result: TurnResult, storage_label: str = "") -> None:
-    console.print(f"\n[bold cyan]🧑 用户[/bold cyan]: {escape(user_text)}")
+    console.print(f"\n[bold cyan]🧑 User[/bold cyan]: {escape(user_text)}")
 
     action_badge = {
-        RouteActionType.NEW_TOPIC: "[bold green]🌱 新建话题 Session[/bold green]",
-        RouteActionType.CONTINUE: "[bold blue]🎯 延续当前话题[/bold blue]",
-        RouteActionType.SIDE_TANGENT: "[bold yellow]🛡️ 临时穿插隔离 (Side-Tangent)[/bold yellow]",
-        RouteActionType.SWITCH_EXISTING: "[bold magenta]🔍 语义召回历史 Session[/bold magenta]",
-        RouteActionType.CONSOLIDATE: "[bold bright_cyan]🧠 核心主题归纳整理[/bold bright_cyan]",
+        RouteActionType.NEW_TOPIC: "[bold green]🌱 New Topic Session[/bold green]",
+        RouteActionType.CONTINUE: "[bold blue]🎯 Continue Topic[/bold blue]",
+        RouteActionType.SIDE_TANGENT: "[bold yellow]🛡️ Side-Tangent Sandbox (Isolated)[/bold yellow]",
+        RouteActionType.SWITCH_EXISTING: "[bold magenta]🔍 Recall Topic Session[/bold magenta]",
+        RouteActionType.CONSOLIDATE: "[bold bright_cyan]🧠 Consolidate Core Themes[/bold bright_cyan]",
     }.get(result.decision.action, str(result.decision.action))
 
     sess_title = (
-        f"《{escape(result.active_session.title)}》 ({result.active_session.id})"
+        f"[{escape(result.active_session.title)}] ({result.active_session.id})"
         if result.active_session
-        else "全局视图"
+        else "Global View"
     )
     ext_bindings = ""
     if result.active_session and result.active_session.external_sessions:
         pairs = [f"{k}:{v[:8]}" for k, v in result.active_session.external_sessions.items()]
-        ext_bindings = f" | 绑定: [cyan]{', '.join(pairs)}[/cyan]"
+        ext_bindings = f" | Bound: [cyan]{', '.join(pairs)}[/cyan]"
 
     db_note = f" | ☁️ [dim]{escape(storage_label)}[/dim]" if storage_label else ""
     console.print(
-        f"  [dim]└─ 脉络路由:[/dim] {action_badge} | [bold]{sess_title}[/bold]{ext_bindings}{db_note}\n"
-        f"  [dim]└─ 路由依据:[/dim] [italic]{escape(result.decision.reason)}[/italic]"
+        f"  [dim]└─ Route:[/dim] {action_badge} | [bold]{sess_title}[/bold]{ext_bindings}{db_note}\n"
+        f"  [dim]└─ Reason:[/dim] [italic]{escape(result.decision.reason)}[/italic]"
     )
     if result.agent_execution:
         cmd_preview = " ".join(shlex.quote(c) for c in result.agent_execution.command[:6])
         if len(result.agent_execution.command) > 6:
             cmd_preview += " ..."
         console.print(
-            f"  [dim]└─ 外部 Agent ({result.agent_execution.agent_name}):[/dim] [green]{escape(cmd_preview)}[/green]"
+            f"  [dim]└─ External Agent ({result.agent_execution.agent_name}):[/dim] [green]{escape(cmd_preview)}[/green]"
         )
 
     console.print(
@@ -185,18 +184,18 @@ def print_sessions_table(engine: MailuoEngine) -> None:
     sessions = engine.storage.list_sessions(include_merged=False)
     active_id = engine.storage.get_active_session_id()
     table = Table(
-        title=f"📂 话题 Sessions 列表 — {engine.storage.db_label}",
+        title=f"📂 Topic Sessions — {engine.storage.db_label}",
         show_lines=True,
     )
-    table.add_column("状态", width=8)
+    table.add_column("Status", width=9)
     table.add_column("Session ID", style="cyan", no_wrap=True)
-    table.add_column("具体话题标题", style="bold")
-    table.add_column("绑定 Agent", style="bright_magenta")
-    table.add_column("所属核心主题", style="green")
-    table.add_column("结构化脉络摘要 (不受穿插问题污染)")
+    table.add_column("Topic Title", style="bold")
+    table.add_column("Agent", style="bright_magenta")
+    table.add_column("Core Theme", style="green")
+    table.add_column("Structured Summary (Clean Context)")
 
     for s in sessions:
-        marker = "🟢 激活" if s.id == active_id else "⏸️ 挂起"
+        marker = "🟢 Active" if s.id == active_id else "⏸️ Paused"
         theme_name = "-"
         if s.theme_id:
             th = engine.storage.get_theme(s.theme_id)
@@ -213,7 +212,7 @@ def print_sessions_table(engine: MailuoEngine) -> None:
             s.title,
             ext_str,
             theme_name,
-            s.summary or "(暂无摘要)",
+            s.summary or "(No summary yet)",
         )
     console.print(table)
 
@@ -225,8 +224,8 @@ def run_demo() -> None:
 
         console.print(
             Panel.fit(
-                "[bold bright_white]mai (脉络 Mailuo) 极简演示[/bold bright_white]\n"
-                "多用户云端隔离 (Cloudflare D1) + `pi.dev` (`pi`) / `Google Antigravity` (`agy`) 托管",
+                "[bold bright_white]mai (Mailuo) Quick Demo[/bold bright_white]\n"
+                "Multi-tenant Cloudflare D1 + `pi.dev` (`pi`) / `Google Antigravity` (`agy`) Session Management",
                 border_style="bright_blue",
             )
         )
@@ -251,14 +250,13 @@ def run_demo() -> None:
 def run_repl(engine: MailuoEngine) -> None:
     console.print(
         Panel.fit(
-            f"[bold cyan]mai (脉络)[/bold cyan] | 存储空间: [bold green]{escape(engine.storage.db_label)}[/bold green]\n"
-            "直接输入任何话即可（支持自动识别『顺便问一下...』、『把上次讨论XX的话题调出来』、『整理核心主题』）。\n"
-            "极简命令: [bold]ls[/bold] (话题列表) | [bold]themes[/bold] (整理核心主题) | [bold]pi[/bold] (拉起pi) | [bold]agy[/bold] (拉起agy) | [bold]sync[/bold] (同步历史) | [bold]whoami[/bold] (当前账号) | [bold]q / Ctrl+C[/bold] (退出)",
+            f"[bold cyan]mai[/bold cyan] | Storage: [bold green]{escape(engine.storage.db_label)}[/bold green]\n"
+            "Type any message to chat (auto-detects side-tangents, recalls past sessions, or consolidates themes).\n"
+            "Commands: [bold]ls[/bold] (sessions) | [bold]themes[/bold] (core themes) | [bold]pi[/bold] (launch pi) | [bold]agy[/bold] (launch agy) | [bold]sync[/bold] (scan & upload) | [bold]whoami[/bold] (account) | [bold]q / Ctrl+C[/bold] (exit)",
             border_style="cyan",
         )
     )
 
-    # 缓存当前激活的话题，避免每次打印提示符都发起网络请求导致卡顿
     cached_active: Optional[TopicSession] = None
     try:
         cached_active = engine.get_active_session()
@@ -266,13 +264,12 @@ def run_repl(engine: MailuoEngine) -> None:
         cached_active = None
 
     while True:
-        topic_label = cached_active.title[:18] if cached_active else "新话题"
-        # 注意：使用 escape 避免 rich.console.input 把 `[...]` 当作样式标签吞掉！
+        topic_label = cached_active.title[:18] if cached_active else "new-topic"
         prompt_markup = f"\n[bold green]{escape(f'[{engine.storage.username} | {topic_label}]')} > [/bold green]"
         try:
             text = console.input(prompt_markup).strip()
         except (EOFError, KeyboardInterrupt):
-            console.print("\n[dim]👋 再见！[/dim]")
+            console.print("\n[dim]👋 Bye![/dim]")
             break
 
         if not text:
@@ -281,11 +278,15 @@ def run_repl(engine: MailuoEngine) -> None:
         parts = text.split(maxsplit=1)
         first_word = parts[0]
         rest_arg = parts[1].strip() if len(parts) > 1 else ""
-        matched_cmd = resolve_short_command(first_word) if not rest_arg or first_word.lower().lstrip("/") in ("pi", "agy", "new", "rm", "del", "sync", "scan") else None
+        matched_cmd = (
+            resolve_short_command(first_word)
+            if not rest_arg or first_word.lower().lstrip("/") in ("pi", "agy", "new", "rm", "del", "sync", "scan")
+            else None
+        )
 
         try:
             if matched_cmd == "quit":
-                console.print("[dim]👋 再见！[/dim]")
+                console.print("[dim]👋 Bye![/dim]")
                 break
 
             if matched_cmd == "help":
@@ -294,7 +295,7 @@ def run_repl(engine: MailuoEngine) -> None:
 
             if matched_cmd == "whoami":
                 console.print(
-                    f"[bold cyan]👤 当前用户:[/bold cyan] {engine.storage.username} ({engine.storage.user_id}) | [bold green]{escape(engine.storage.db_label)}[/bold green]"
+                    f"[bold cyan]👤 Current User:[/bold cyan] {engine.storage.username} ({engine.storage.user_id}) | [bold green]{escape(engine.storage.db_label)}[/bold green]"
                 )
                 continue
 
@@ -303,7 +304,7 @@ def run_repl(engine: MailuoEngine) -> None:
                 continue
 
             if matched_cmd == "themes":
-                res = engine.chat("请把这些 session 整理成跟我有关的最核心主题")
+                res = engine.chat("Consolidate all sessions into core themes")
                 render_turn("themes", res, engine.storage.db_label)
                 print_sessions_table(engine)
                 continue
@@ -312,12 +313,12 @@ def run_repl(engine: MailuoEngine) -> None:
                 force_flag = "--force" in rest_arg or "-f" in rest_arg
                 clean_src = rest_arg.replace("--force", "").replace("-f", "").strip()
                 src = clean_src if clean_src in ("all", "pi", "agy") else "all"
-                console.print(f"[cyan]🔍 正在扫描本机 ({src}) 的 pi.dev 与 agy 历史会话并上传至云端...[/cyan]")
+                console.print(f"[cyan]🔍 Scanning local ({src}) sessions for pi.dev & agy and uploading to cloud...[/cyan]")
                 imported = engine.sync_external_sessions(
                     source=src, limit_per_source=50, force_update=force_flag
                 )
                 console.print(
-                    f"[bold green]☁️ 扫描完成！本次新增/更新了 {len(imported)} 个会话至 {escape(engine.storage.db_label)}（已同步的会话若无新增对话自动跳过，加 --force 可强制重算）。[/bold green]"
+                    f"[bold green]☁️ Sync complete! Uploaded/updated {len(imported)} session(s) to {escape(engine.storage.db_label)} (unchanged sessions skipped; use --force to recompute all).[/bold green]"
                 )
                 print_sessions_table(engine)
                 continue
@@ -330,14 +331,14 @@ def run_repl(engine: MailuoEngine) -> None:
                 else:
                     engine.storage.set_active_session_id(None)
                     cached_active = None
-                    console.print("[bold green]🌱 已重置为空白话题状态。[/bold green]")
+                    console.print("[bold green]🌱 Active topic reset. Next turn will start a fresh topic.[/bold green]")
                 continue
 
             if matched_cmd == "rm" and rest_arg:
                 engine.storage.delete_session(rest_arg)
                 if cached_active and cached_active.id == rest_arg:
                     cached_active = None
-                console.print(f"[bold yellow]🗑️ 已删除话题 Session: {escape(rest_arg)}[/bold yellow]")
+                console.print(f"[bold yellow]🗑️ Deleted topic session: {escape(rest_arg)}[/bold yellow]")
                 continue
 
             if matched_cmd == "pi":
@@ -350,7 +351,7 @@ def run_repl(engine: MailuoEngine) -> None:
                     if sess:
                         cached_active = sess
                         console.print(
-                            f"[bold green]✅ 已将刚才在 pi.dev 中的讨论同步至话题《{escape(sess.title)}》({sess.id})[/bold green]"
+                            f"[bold green]✅ Synced pi.dev discussion to topic [{escape(sess.title)}] ({sess.id})[/bold green]"
                         )
                 continue
 
@@ -364,14 +365,13 @@ def run_repl(engine: MailuoEngine) -> None:
                     if sess:
                         cached_active = sess
                         console.print(
-                            f"[bold green]✅ 已将刚才在 Google agy 中的讨论同步至话题《{escape(sess.title)}》({sess.id})[/bold green]"
+                            f"[bold green]✅ Synced Google agy discussion to topic [{escape(sess.title)}] ({sess.id})[/bold green]"
                         )
                 continue
 
-            # 防止用户随手敲错单个短英文单词（比如 `lls`, `whoo`）被误当成新话题发往云端
             if not rest_arg and text.isascii() and text.isalpha() and len(text) <= 8:
                 console.print(
-                    f"[yellow]未识别的短命令 `{escape(text)}`。输入 `help` 查看命令列表，或输入完整句子开始讨论话题。[/yellow]"
+                    f"[yellow]Unknown command `{escape(text)}`. Type `help` for commands, or enter a full sentence to discuss a topic.[/yellow]"
                 )
                 continue
 
@@ -380,29 +380,29 @@ def run_repl(engine: MailuoEngine) -> None:
             render_turn(text, res, engine.storage.db_label)
 
         except KeyboardInterrupt:
-            console.print("\n[yellow]⚡ 已取消当前操作（再按一次 Ctrl+C 或输入 q 即可退出 mai）[/yellow]")
+            console.print("\n[yellow]⚡ Operation cancelled (press Ctrl+C again or type q to exit)[/yellow]")
             continue
 
 
-HELP_TEXT = """[bold cyan]mai (脉络 Mailuo) — 多用户云端隔离极简 CLI (Cloudflare D1)[/bold cyan]
+HELP_TEXT = """[bold cyan]mai (Mailuo) — Multi-User Cloud Session & Theme CLI (Cloudflare D1)[/bold cyan]
 
-账号与多机同步:
-  [bold green]mai register [用户名] [密码][/bold green]  注册个人专属账号（数据按账号严格隔离，绝不串号）
-  [bold green]mai login [用户名] [密码][/bold green]     在其他机器上登录账号，立即接入你的个人云端脉络
-  [bold green]mai whoami[/bold green]                    查看当前登录的账号与云端连接状态
-  [bold green]mai logout[/bold green]                    退出当前机器上的登录状态
+Account & Multi-Machine Sync:
+  [bold green]mai register [user] [pass][/bold green]    Register a personal account (strictly isolated by user_id)
+  [bold green]mai login [user] [pass][/bold green]       Log in on a new machine to access your cloud sessions
+  [bold green]mai whoami[/bold green]                    Show current logged-in account and cloud gateway status
+  [bold green]mai logout[/bold green]                    Clear local credentials on this machine
 
-日常脉络操作:
-  [bold green]mai[/bold green]                           启动交互式对话
-  [bold green]mai "<任意对话内容>"[/bold green]          直接发送一句话（自动路由/穿插隔离/调出历史话题/整理主题）
-  [bold green]mai pi [提问内容][/bold green]             使用 [bold]pi.dev[/bold] 来讨论话题（退出后自动提取你聊的内容生成脉络摘要）
-  [bold green]mai agy [提问内容][/bold green]            使用 [bold]Google agy[/bold] 来讨论话题（退出后自动提取你聊的内容生成脉络摘要）
-  [bold green]mai ls[/bold green]                        查看当前账号下的所有具体话题 Sessions
-  [bold green]mai new [新话题内容][/bold green]          开启全新话题（或重置当前激活指针）
-  [bold green]mai rm <session_id>[/bold green]           删除指定的话题 Session
-  [bold green]mai themes[/bold green]                    把当前账号下的零散 Session 整理成『最核心主题』
-  [bold green]mai sync[/bold green]                      将本机 pi.dev 和 agy 的历史记录一键同步至当前账号下
-  [bold green]mai demo[/bold green]                      运行自动化演示
+Session & Agent Commands:
+  [bold green]mai[/bold green]                           Start interactive REPL
+  [bold green]mai "<message>"[/bold green]               Send a message (auto-route / side-tangent / recall / consolidate)
+  [bold green]mai pi [prompt][/bold green]               Launch [bold]pi.dev[/bold] under current topic (auto-extracts summary on exit)
+  [bold green]mai agy [prompt][/bold green]              Launch [bold]Google agy[/bold] under current topic (auto-extracts summary on exit)
+  [bold green]mai ls[/bold green]                        List all topic sessions under current account
+  [bold green]mai new [message][/bold green]             Start a new topic session (or reset active pointer)
+  [bold green]mai rm <session_id>[/bold green]           Delete a specific topic session
+  [bold green]mai themes[/bold green]                    Consolidate scattered sessions into Core Themes
+  [bold green]mai sync [pi|agy] [--force][/bold green]   Scan & upload local pi.dev and agy sessions to Cloudflare D1
+  [bold green]mai demo[/bold green]                      Run automated demonstration
 """
 
 
@@ -427,12 +427,11 @@ def _main_inner() -> None:
         run_demo()
         return
 
-    # 账号注册 / 登录 / 状态查询
     if cmd in ("register", "reg", "signup"):
         if len(args) >= 3:
             profile = register_user(args[1], args[2])
             console.print(
-                f"[bold green]✅ 注册并登录成功！当前用户: {profile['username']} ({profile['user_id']})[/bold green]"
+                f"[bold green]✅ Registered & logged in as: {profile['username']} ({profile['user_id']})[/bold green]"
             )
         else:
             preset_u = args[1] if len(args) == 2 else None
@@ -443,7 +442,7 @@ def _main_inner() -> None:
         if len(args) >= 3:
             profile = login_user(args[1], args[2])
             console.print(
-                f"[bold green]✅ 登录成功！当前用户: {profile['username']} ({profile['user_id']})[/bold green]"
+                f"[bold green]✅ Logged in as: {profile['username']} ({profile['user_id']})[/bold green]"
             )
         else:
             preset_u = args[1] if len(args) == 2 else None
@@ -452,7 +451,7 @@ def _main_inner() -> None:
 
     if cmd in ("logout",):
         clear_auth_profile()
-        console.print("[bold yellow]已清除本机登录凭证。[/bold yellow]")
+        console.print("[bold yellow]Cleared local auth credentials.[/bold yellow]")
         return
 
     resolved = resolve_short_command(cmd) if not rest else None
@@ -461,11 +460,11 @@ def _main_inner() -> None:
         prof = load_auth_profile()
         if prof:
             console.print(
-                f"[bold green]👤 当前登录账号:[/bold green] {prof['username']} (ID: {prof['user_id']})\n"
-                f"[bold cyan]☁️ 云端网关:[/bold cyan] {prof.get('gateway_url')}"
+                f"[bold green]👤 User:[/bold green] {prof['username']} (ID: {prof['user_id']})\n"
+                f"[bold cyan]☁️ Cloud Gateway:[/bold cyan] {prof.get('gateway_url')}"
             )
         else:
-            console.print("[yellow]当前未登录云端账号。请运行 `mai register` 或 `mai login`。[/yellow]")
+            console.print("[yellow]Not logged in. Run `mai register` or `mai login`.[/yellow]")
         return
 
     ensure_logged_in(db_target)
@@ -477,7 +476,7 @@ def _main_inner() -> None:
 
     if cmd in ("rm", "del", "delete") and rest:
         engine.storage.delete_session(rest)
-        console.print(f"[bold yellow]🗑️ 已删除话题 Session: {escape(rest)}[/bold yellow]")
+        console.print(f"[bold yellow]🗑️ Deleted topic session: {escape(rest)}[/bold yellow]")
         print_sessions_table(engine)
         return
 
@@ -487,11 +486,11 @@ def _main_inner() -> None:
             render_turn(f"mai new {rest}", res, engine.storage.db_label)
         else:
             engine.storage.set_active_session_id(None)
-            console.print("[bold green]🌱 已重置当前激活指针，下一次对话或拉起 `mai pi` / `mai agy` 将开启全新话题！[/bold green]")
+            console.print("[bold green]🌱 Reset active topic pointer. Next chat or `mai pi` / `mai agy` will start a fresh topic.[/bold green]")
         return
 
     if cmd in ("themes", "theme", "--themes") or resolved == "themes":
-        res = engine.chat("请把这些 session 整理成跟我有关的最核心主题")
+        res = engine.chat("Consolidate all sessions into core themes")
         render_turn("mai themes", res, engine.storage.db_label)
         print_sessions_table(engine)
         return
@@ -500,12 +499,12 @@ def _main_inner() -> None:
         force_flag = "--force" in rest or "-f" in rest
         clean_src = rest.replace("--force", "").replace("-f", "").strip()
         src = clean_src if clean_src in ("all", "pi", "agy") else "all"
-        console.print(f"[cyan]🔍 正在扫描本机 ({src}) 的 pi.dev 与 agy 历史会话并上传至云端...[/cyan]")
+        console.print(f"[cyan]🔍 Scanning local ({src}) sessions for pi.dev & agy and uploading to cloud...[/cyan]")
         imported = engine.sync_external_sessions(
             source=src, limit_per_source=50, force_update=force_flag
         )
         console.print(
-            f"[bold green]☁️ 扫描完成！本次新增/更新了 {len(imported)} 个本机 ({src}) 会话至 {escape(engine.storage.db_label)}（已同步且无新对话的会话自动跳过，加 --force 可强制重算）。[/bold green]"
+            f"[bold green]☁️ Sync complete! Uploaded/updated {len(imported)} local ({src}) session(s) to {escape(engine.storage.db_label)} (unchanged sessions skipped; use --force to recompute all).[/bold green]"
         )
         print_sessions_table(engine)
         return
@@ -518,7 +517,7 @@ def _main_inner() -> None:
             sess = engine.launch_agent_interactive("pi")
             if sess:
                 console.print(
-                    f"[bold green]✅ 已将刚才在 pi.dev 中的讨论同步至话题《{escape(sess.title)}》({sess.id}) — {escape(engine.storage.db_label)}[/bold green]"
+                    f"[bold green]✅ Synced pi.dev discussion to topic [{escape(sess.title)}] ({sess.id}) — {escape(engine.storage.db_label)}[/bold green]"
                 )
         return
 
@@ -530,7 +529,7 @@ def _main_inner() -> None:
             sess = engine.launch_agent_interactive("agy")
             if sess:
                 console.print(
-                    f"[bold green]✅ 已将刚才在 Google agy 中的讨论同步至话题《{escape(sess.title)}》({sess.id}) — {escape(engine.storage.db_label)}[/bold green]"
+                    f"[bold green]✅ Synced Google agy discussion to topic [{escape(sess.title)}] ({sess.id}) — {escape(engine.storage.db_label)}[/bold green]"
                 )
         return
 
@@ -543,7 +542,7 @@ def main() -> None:
     try:
         _main_inner()
     except KeyboardInterrupt:
-        console.print("\n[dim]👋 已退出 mai。[/dim]")
+        console.print("\n[dim]👋 Exited mai.[/dim]")
         sys.exit(0)
 
 

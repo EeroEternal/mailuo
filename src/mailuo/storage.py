@@ -109,14 +109,14 @@ def register_user(
     gateway_url: Optional[str] = None,
     config_path: Path = AUTH_CONFIG_PATH,
 ) -> dict[str, Any]:
-    """在 Cloudflare D1 云端注册新用户并保存登录凭证到本机."""
+    """Register a new user in Cloudflare D1 and save auth profile locally."""
     res = _gateway_post(
         "/auth/register",
         {"username": username, "password": password},
         gateway_url=gateway_url,
     )
     if not res.get("ok"):
-        raise RuntimeError(res.get("error") or "注册失败")
+        raise RuntimeError(res.get("error") or "Registration failed")
     profile = {
         "user_id": res["user_id"],
         "username": res["username"],
@@ -133,14 +133,14 @@ def login_user(
     gateway_url: Optional[str] = None,
     config_path: Path = AUTH_CONFIG_PATH,
 ) -> dict[str, Any]:
-    """登录已有账号并保存凭证到本机."""
+    """Log into an existing account and save auth profile locally."""
     res = _gateway_post(
         "/auth/login",
         {"username": username, "password": password},
         gateway_url=gateway_url,
     )
     if not res.get("ok"):
-        raise RuntimeError(res.get("error") or "登录失败")
+        raise RuntimeError(res.get("error") or "Login failed")
     profile = {
         "user_id": res["user_id"],
         "username": res["username"],
@@ -152,7 +152,7 @@ def login_user(
 
 
 class CloudflareGatewayClient:
-    """多租户 Cloudflare Worker D1 客户端（自动携带当前登录用户的 Token，数据按 user_id 隔离）."""
+    """Multi-tenant Cloudflare Worker D1 client (isolated by user_id)."""
 
     def __init__(self, token: str, username: str, user_id: str, gateway_url: str = DEFAULT_GATEWAY_URL) -> None:
         self.token = token
@@ -168,7 +168,7 @@ class CloudflareGatewayClient:
             gateway_url=self.gateway_url,
         )
         if not res.get("ok"):
-            raise RuntimeError(res.get("error") or "Cloudflare D1 查询失败")
+            raise RuntimeError(res.get("error") or "Cloudflare D1 query failed")
         return res.get("results") or []
 
 
@@ -223,10 +223,7 @@ CREATE TABLE IF NOT EXISTS tenant_app_state (
 
 
 class MailuoStorage:
-    """支持多用户隔离 (`user_id`) 的持久化存储层：
-    - 当 `db_path="d1"` 时：通过已登录用户的 Token 连接 Cloudflare Worker 网关，存入 Cloudflare D1 对应 `user_id` 名下。
-    - 当指定本地 SQLite 路径时（如单元测试或离线模式）：同样按 `user_id` 隔离存储。
-    """
+    """Multi-user isolated persistence layer (Cloudflare D1 or local SQLite)."""
 
     def __init__(
         self,
@@ -252,13 +249,13 @@ class MailuoStorage:
                     gateway_url=gw,
                 )
                 self.backend_mode = "cloudflare-d1"
-                self.db_label = f"Cloudflare D1 (用户: {self.username})"
+                self.db_label = f"Cloudflare D1 (user: {self.username})"
                 return
             db_path = "~/.mailuo/mailuo.db"
 
         self.db_path = Path(db_path).expanduser().resolve()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self.db_label = f"SQLite ({self.db_path.name} | 用户: {self.username})"
+        self.db_label = f"SQLite ({self.db_path.name} | user: {self.username})"
         self._conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._init_sqlite_schema()
