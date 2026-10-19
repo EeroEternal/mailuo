@@ -407,107 +407,107 @@ class MailuoEngine:
     def sync_external_sessions(
         self,
         source: str = "all",
-        limit_per_source: int = 12,
+        limit_per_source: int = 50,
         auto_consolidate: bool = True,
+        force_update: bool = False,
     ) -> list[TopicSession]:
-        """从 `~/.pi/agent/sessions` 和 `~/.gemini/antigravity-cli/brain` 导入原生会话并自动整理为核心主题."""
+        """从 `~/.pi/agent/sessions` 和 `~/.gemini/antigravity-cli/brain` 扫描本地会话并上传/更新至云端 D1."""
         existing_sessions = self.storage.list_sessions(include_merged=True)
         known_ext_ids: dict[str, TopicSession] = {}
         for s in existing_sessions:
             for agent_k, ext_id in s.external_sessions.items():
                 known_ext_ids[f"{agent_k}:{ext_id}"] = s
 
-        imported: list[TopicSession] = []
+        synced: list[TopicSession] = []
 
-        # 1. 同步 pi.dev 会话
+        def _process_item(
+            agent_key: str,
+            agent_label: str,
+            ext_id: str,
+            msgs: list[dict],
+            cwd: str = "",
+        ) -> None:
+            user_texts = [m["content"] for m in msgs if m["role"] == "user"]
+            if not user_texts:
+                return
+            if any(
+                "专题讨论" in ut or f"拉起 {agent_key} 交互式会话" in ut
+                for ut in user_texts[:2]
+            ):
+                return
+
+            key = f"{agent_key}:{ext_id}"
+            existing = known_ext_ids.get(key)
+
+            # 如果已经存在且未开启 force_update，检查本地会话轮数是否比已摘要的轮数更多
+            if existing is not None and not force_update:
+                turn_marker = f"共 {len(user_texts)} 轮提问"
+                if existing.summary and turn_marker in existing.summary:
+                    return
+
+            title, tags = self.llm.extract_session_title_and_tags(
+                user_messages=user_texts,
+                cwd=cwd,
+                agent_source=agent_label,
+            )
+            emb = self.llm.embed(f"{title} {' '.join(tags)}")
+
+            if existing is not None:
+                sess = existing
+                sess.title = title
+                sess.tags = list(dict.fromkeys(tags + sess.tags))
+                sess.embedding = emb
+            else:
+                sess = TopicSession(
+                    title=title,
+                    tags=tags,
+                    status=SessionStatus.PAUSED,
+                    external_sessions={agent_key: ext_id},
+                    embedding=emb,
+                )
+
+            all_temp_records = [
+                MessageRecord(
+                    session_id=sess.id,
+                    role=m["role"],
+                    content=self.llm._strip_file_paths(m["content"]) or m["content"][:200],
+                    agent_source=agent_key,
+                    is_ephemeral=False,
+                )
+                for m in msgs
+            ]
+            sess = self.llm.update_session_state(sess, all_temp_records)
+            self.storage.save_session(sess)
+            synced.append(sess)
+
+        # 1. 扫描并同步 pi.dev 会话 (~/.pi/agent/sessions/**/*.jsonl)
         if source in ("all", "pi"):
             for fpath in self.pi_bridge.list_recent_session_files(limit=limit_per_source):
                 parsed = self.pi_bridge.parse_pi_jsonl(fpath)
-                ext_id = parsed["external_session_id"]
-                msgs = parsed["messages"]
-                cwd = parsed.get("cwd") or ""
-                user_texts = [m["content"] for m in msgs if m["role"] == "user"]
-                if not user_texts:
-                    continue
-                if any("专题讨论" in ut or "拉起 pi 交互式会话" in ut for ut in user_texts[:2]):
-                    continue
-                key = f"pi:{ext_id}"
-                if key in known_ext_ids:
-                    continue
-
-                title, tags = self.llm.extract_session_title_and_tags(
-                    user_messages=user_texts,
-                    cwd=cwd,
-                    agent_source="pi.dev",
+                _process_item(
+                    agent_key="pi",
+                    agent_label="pi.dev",
+                    ext_id=parsed["external_session_id"],
+                    msgs=parsed["messages"],
+                    cwd=parsed.get("cwd") or "",
                 )
-                emb = self.llm.embed(f"{title} {' '.join(tags)}")
-                sess = TopicSession(
-                    title=title,
-                    tags=tags,
-                    status=SessionStatus.PAUSED,
-                    external_sessions={"pi": ext_id},
-                    embedding=emb,
-                )
-                all_temp_records = [
-                    MessageRecord(
-                        session_id=sess.id,
-                        role=m["role"],
-                        content=self.llm._strip_file_paths(m["content"]) or m["content"][:200],
-                        agent_source="pi",
-                        is_ephemeral=False,
-                    )
-                    for m in msgs
-                ]
-                sess = self.llm.update_session_state(sess, all_temp_records)
-                self.storage.save_session(sess)
-                imported.append(sess)
 
-        # 2. 同步 Google Antigravity (agy) 会话
+        # 2. 扫描并同步 Google Antigravity (agy) 会话 (~/.gemini/antigravity-cli/brain/*)
         if source in ("all", "agy"):
             for fpath in self.agy_bridge.list_recent_transcripts(limit=limit_per_source):
                 parsed = self.agy_bridge.parse_agy_transcript(fpath)
-                ext_id = parsed["external_session_id"]
-                msgs = parsed["messages"]
-                user_texts = [m["content"] for m in msgs if m["role"] == "user"]
-                if not user_texts:
-                    continue
-                if any("专题讨论》" in ut or "拉起 agy 交互式会话" in ut for ut in user_texts[:2]):
-                    continue
-                key = f"agy:{ext_id}"
-                if key in known_ext_ids:
-                    continue
-
-                title, tags = self.llm.extract_session_title_and_tags(
-                    user_messages=user_texts,
+                _process_item(
+                    agent_key="agy",
+                    agent_label="agy",
+                    ext_id=parsed["external_session_id"],
+                    msgs=parsed["messages"],
                     cwd="",
-                    agent_source="agy",
                 )
-                emb = self.llm.embed(f"{title} {' '.join(tags)}")
-                sess = TopicSession(
-                    title=title,
-                    tags=tags,
-                    status=SessionStatus.PAUSED,
-                    external_sessions={"agy": ext_id},
-                    embedding=emb,
-                )
-                all_temp_records = [
-                    MessageRecord(
-                        session_id=sess.id,
-                        role=m["role"],
-                        content=self.llm._strip_file_paths(m["content"]) or m["content"][:200],
-                        agent_source="agy",
-                        is_ephemeral=False,
-                    )
-                    for m in msgs
-                ]
-                sess = self.llm.update_session_state(sess, all_temp_records)
-                self.storage.save_session(sess)
-                imported.append(sess)
 
-        if auto_consolidate and (imported or existing_sessions):
+        if auto_consolidate and synced:
             self.consolidate_themes()
 
-        return imported
+        return synced
 
     # ------------------------------------------------------------------
     # 话题检索与核心主题归纳 API

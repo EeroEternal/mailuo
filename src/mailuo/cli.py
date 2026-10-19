@@ -49,6 +49,7 @@ KNOWN_COMMANDS = {
     "themes": "themes",
     "theme": "themes",
     "sync": "sync",
+    "scan": "sync",
     "whoami": "whoami",
     "who": "whoami",
     "me": "whoami",
@@ -280,7 +281,7 @@ def run_repl(engine: MailuoEngine) -> None:
         parts = text.split(maxsplit=1)
         first_word = parts[0]
         rest_arg = parts[1].strip() if len(parts) > 1 else ""
-        matched_cmd = resolve_short_command(first_word) if not rest_arg or first_word.lower().lstrip("/") in ("pi", "agy", "new", "rm", "del", "sync") else None
+        matched_cmd = resolve_short_command(first_word) if not rest_arg or first_word.lower().lstrip("/") in ("pi", "agy", "new", "rm", "del", "sync", "scan") else None
 
         try:
             if matched_cmd == "quit":
@@ -308,10 +309,15 @@ def run_repl(engine: MailuoEngine) -> None:
                 continue
 
             if matched_cmd == "sync":
-                src = rest_arg if rest_arg in ("all", "pi", "agy") else "all"
-                imported = engine.sync_external_sessions(source=src, limit_per_source=10)
+                force_flag = "--force" in rest_arg or "-f" in rest_arg
+                clean_src = rest_arg.replace("--force", "").replace("-f", "").strip()
+                src = clean_src if clean_src in ("all", "pi", "agy") else "all"
+                console.print(f"[cyan]🔍 正在扫描本机 ({src}) 的 pi.dev 与 agy 历史会话并上传至云端...[/cyan]")
+                imported = engine.sync_external_sessions(
+                    source=src, limit_per_source=50, force_update=force_flag
+                )
                 console.print(
-                    f"[bold green]☁️ 已同步 {len(imported)} 个本机 ({src}) 会话到 {escape(engine.storage.db_label)}！[/bold green]"
+                    f"[bold green]☁️ 扫描完成！本次新增/更新了 {len(imported)} 个会话至 {escape(engine.storage.db_label)}（已同步的会话若无新增对话自动跳过，加 --force 可强制重算）。[/bold green]"
                 )
                 print_sessions_table(engine)
                 continue
@@ -490,11 +496,16 @@ def _main_inner() -> None:
         print_sessions_table(engine)
         return
 
-    if cmd in ("sync", "--sync") or resolved == "sync":
-        src = args[1] if len(args) > 1 else "all"
-        imported = engine.sync_external_sessions(source=src, limit_per_source=10)
+    if cmd in ("sync", "scan", "--sync", "--scan") or resolved == "sync":
+        force_flag = "--force" in rest or "-f" in rest
+        clean_src = rest.replace("--force", "").replace("-f", "").strip()
+        src = clean_src if clean_src in ("all", "pi", "agy") else "all"
+        console.print(f"[cyan]🔍 正在扫描本机 ({src}) 的 pi.dev 与 agy 历史会话并上传至云端...[/cyan]")
+        imported = engine.sync_external_sessions(
+            source=src, limit_per_source=50, force_update=force_flag
+        )
         console.print(
-            f"[bold green]☁️ 已成功将 {len(imported)} 个本机 ({src}) 会话同步至 {escape(engine.storage.db_label)}！[/bold green]"
+            f"[bold green]☁️ 扫描完成！本次新增/更新了 {len(imported)} 个本机 ({src}) 会话至 {escape(engine.storage.db_label)}（已同步且无新对话的会话自动跳过，加 --force 可强制重算）。[/bold green]"
         )
         print_sessions_table(engine)
         return
