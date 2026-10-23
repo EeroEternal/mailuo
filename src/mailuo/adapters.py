@@ -51,6 +51,22 @@ def has_meaningful_context(
     return False
 
 
+def run_interactive(cmd: list[str], cwd: Optional[str | Path] = None) -> subprocess.Popen:
+    """Run an agent TUI in the foreground and wait for it to exit.
+
+    Ctrl+C reaches both mai and the agent (same foreground process group), so the
+    SIGINT is swallowed here: dying mid-session would skip the transcript sync and
+    leave the agent running.
+    """
+    proc = subprocess.Popen(cmd, cwd=str(cwd) if cwd else None)
+    while proc.poll() is None:
+        try:
+            proc.wait()
+        except KeyboardInterrupt:
+            continue
+    return proc
+
+
 def build_mailuo_context_prompt(
     session: TopicSession,
     theme: Optional[CoreTheme] = None,
@@ -58,33 +74,32 @@ def build_mailuo_context_prompt(
     is_tangent: bool = False,
 ) -> str:
     """构建跨 Agent 共享的脉络上下文提示词（仅在确有历史讨论记录时生成）."""
-    lines = [
-        f"【Mailuo 历史脉络背景】我们正在讨论的话题：《{session.title}》",
-    ]
+    lines = [f"[Mailuo topic context] Topic under discussion: \"{session.title}\""]
     if theme:
         lines.append(
-            f"【所属核心主题】《{theme.name}》— 核心共识：{theme.consolidated_insight}"
+            f"[Core theme] {theme.name} — shared insight: {theme.consolidated_insight}"
         )
     if session.summary:
-        lines.append(f"【此前讨论摘要】{session.summary}")
+        lines.append(f"[Previous discussion summary] {session.summary}")
     if session.key_decisions:
-        lines.append("【已达成关键结论】" + "；".join(session.key_decisions))
+        lines.append("[Key decisions] " + "; ".join(session.key_decisions))
     if session.open_questions:
-        lines.append("【待推进问题】" + "；".join(session.open_questions))
+        lines.append("[Open questions] " + "; ".join(session.open_questions))
 
     if recent_messages:
         cross_notes = []
         for m in recent_messages[-4:]:
-            role_label = "用户" if m.role == "user" else f"Agent({m.agent_source})"
+            role_label = "User" if m.role == "user" else f"Agent({m.agent_source})"
             snippet = m.content.strip().replace("\n", " ")[:160]
             cross_notes.append(f"- {role_label}: {snippet}")
         if cross_notes:
-            lines.append("【近期对话片段】\n" + "\n".join(cross_notes))
+            lines.append("[Recent turns]\n" + "\n".join(cross_notes))
 
     if is_tangent:
         lines.append(
-            "【重要提示】本次提问为『临时穿插提问 (Side-Tangent)』，请直接简明作答，不要偏离或改写主话题结论。"
+            "[Note] This is a side-tangent question: answer concisely without altering the main topic's conclusions."
         )
+    lines.append("[Language] Always reply in English.")
     return "\n".join(lines)
 
 
@@ -126,15 +141,22 @@ class PiDevBridge:
         """
         cmd = [self.pi_bin]
 
+        # The caller may pick the session itself (e.g. `mai pi --session <id>` to resume).
+        explicit_resume = any(
+            a in ("--session", "--session-id", "--resume", "-r", "--continue", "-c")
+            for a in (extra_args or [])
+        )
+
         if is_tangent:
             cmd.append("--no-session")
-        else:
+        elif not explicit_resume:
             pi_sid = self.ensure_pi_session_id(session)
             cmd.extend(["--session-id", pi_sid])
-            if session.title and not session.title.startswith("未命名"):
-                cmd.extend(["--name", f"[脉络] {session.title}"])
+            if session.title and not session.title.startswith(("未命名", "Unnamed")):
+                cmd.extend(["--name", f"[Mailuo] {session.title}"])
 
-        if has_meaningful_context(session, recent_messages) or is_tangent:
+        # A resumed pi session already carries its own history, so no extra context header.
+        if (has_meaningful_context(session, recent_messages) or is_tangent) and not explicit_resume:
             context_prompt = build_mailuo_context_prompt(
                 session, theme=theme, recent_messages=recent_messages, is_tangent=is_tangent
             )
@@ -160,6 +182,7 @@ class PiDevBridge:
         interactive: bool = False,
         cwd: Optional[str | Path] = None,
         timeout: int = 180,
+        extra_args: Optional[list[str]] = None,
     ) -> AgentExecutionResult:
         """拉起 `pi` 执行对话，并在退出后自动提取真实对话内容回写到 Mailuo."""
         cmd = self.build_command(
@@ -169,15 +192,25 @@ class PiDevBridge:
             recent_messages=recent_messages,
             is_tangent=is_tangent,
             interactive=interactive,
+            extra_args=extra_args,
         )
+        # If the caller passed `--session <id>`, that is the session whose transcript we sync.
         pi_sid = session.external_sessions.get("pi")
+        args = extra_args or []
+        for flag in ("--session", "--session-id"):
+            if flag in args:
+                idx = args.index(flag)
+                if idx + 1 < len(args) and not args[idx + 1].startswith("-"):
+                    pi_sid = args[idx + 1]
+                    session.external_sessions["pi"] = pi_sid
+                break
 
         if interactive:
-            proc = subprocess.run(cmd, cwd=str(cwd) if cwd else None)
+            proc = run_interactive(cmd, cwd=cwd)
             synced_msgs = self.read_pi_session_messages(pi_sid) if pi_sid else []
             last_assistant = next(
                 (m["content"] for m in reversed(synced_msgs) if m["role"] == "assistant"),
-                "（已完成 pi.dev 交互式讨论）",
+                "(pi.dev interactive discussion finished)",
             )
             return AgentExecutionResult(
                 agent_name="pi",
@@ -345,7 +378,7 @@ class GoogleAgyBridge:
                     )
                     cmd.extend([
                         "-i",
-                        f"{ctx_header}\n\n请基于以上我们之前的讨论脉络准备就绪，简短确认后等待我的具体问题。",
+                        f"{ctx_header}\n\nContinue from the topic context above: briefly confirm, then wait for my question.",
                     ])
                 # 否则直接纯净启动 `agy`（或 `agy --conversation <id>`），不带 `-i` 假指令！
         else:
@@ -354,7 +387,7 @@ class GoogleAgyBridge:
                 ctx_header = build_mailuo_context_prompt(
                     session, theme=theme, recent_messages=recent_messages, is_tangent=is_tangent
                 )
-                effective_prompt = f"{ctx_header}\n\n【用户当前请求】\n{effective_prompt}"
+                effective_prompt = f"{ctx_header}\n\n[Current user request]\n{effective_prompt}"
             cmd.extend(["--print", effective_prompt])
 
         return cmd
@@ -383,7 +416,7 @@ class GoogleAgyBridge:
         start_ts = time.time()
 
         if interactive:
-            proc = subprocess.run(cmd, cwd=str(cwd) if cwd else None)
+            proc = run_interactive(cmd, cwd=cwd)
             captured_msgs: list[dict[str, str]] = []
             # 如果原本未绑定 agy conversation，或者刚在交互式窗口里聊了天，自动查找刚更新的 transcript.jsonl
             target_file: Optional[Path] = None
@@ -408,7 +441,7 @@ class GoogleAgyBridge:
 
             last_assistant = next(
                 (m["content"] for m in reversed(captured_msgs) if m["role"] == "assistant"),
-                "（已完成 Google Antigravity `agy` 交互式会话）",
+                "(Google Antigravity `agy` interactive session finished)",
             )
             return AgentExecutionResult(
                 agent_name="agy",

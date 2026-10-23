@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
-from mailuo.adapters import GoogleAgyBridge, PiDevBridge
+from mailuo.adapters import GoogleAgyBridge, PiDevBridge, run_interactive
 from mailuo.engine import MailuoEngine
 from mailuo.models import RouteActionType
 
@@ -171,12 +172,12 @@ def test_pi_and_agy_bridges_command_and_transcript_sync(tmp_path: Path) -> None:
         prompt="请帮我把刚才在 pi 里讨论的网关缓存逻辑写成代码",
         is_tangent=False,
     )
-    assert any("【Mailuo 历史脉络背景】" in arg for arg in agy_cmd)
+    assert any("[Mailuo topic context]" in arg for arg in agy_cmd)
 
     # 6. 验证全新话题下直接运行 `mai agy` (interactive=True, prompt=None) 时，纯净启动 `agy`，绝不发送『Google agy 专题讨论』或『拉起 agy 交互式会话』
     from mailuo.models import TopicSession
 
-    empty_sess = TopicSession(title="未命名新话题")
+    empty_sess = TopicSession(title="Unnamed topic")
     clean_agy_cmd = agy_bridge.build_command(
         empty_sess,
         prompt=None,
@@ -185,6 +186,22 @@ def test_pi_and_agy_bridges_command_and_transcript_sync(tmp_path: Path) -> None:
     assert clean_agy_cmd == [agy_bridge.agy_bin]
     assert "-i" not in clean_agy_cmd
 
+    # 7. 验证 `mai pi --session <id>`：用户自选会话时不再重复注入 --session-id，且同步该会话的记录
+    resume_cmd = pi_bridge.build_command(
+        recalled.active_session,
+        prompt=None,
+        interactive=True,
+        extra_args=["--session", "01a09e80-b7ef"],
+    )
+    assert resume_cmd[1:3] == ["--session", "01a09e80-b7ef"]
+    assert "--session-id" not in resume_cmd
+
+
+
+def test_run_interactive_returns_child_exit_code() -> None:
+    """Ctrl+C 由子 Agent 自行处理：mai 只等待子进程退出，不能自己先死掉."""
+    proc = run_interactive([sys.executable, "-c", "import sys; sys.exit(3)"])
+    assert proc.returncode == 3
 
 
 def test_multi_user_tenant_isolation(tmp_path: Path) -> None:

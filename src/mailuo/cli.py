@@ -231,12 +231,12 @@ def run_demo() -> None:
         )
 
         script = [
-            "我想讨论一下我们的知识库后端架构，准备采用 Cloudflare D1 配合向量检索来存对话数据。",
-            "我们决定核心表拆成 tenant_topic_sessions 和 tenant_messages 两张表，并按 user_id 隔离。",
-            "顺便问一下，帮我写个匹配邮箱的 Python 正则表达式，别弄乱我们刚才聊的架构话题。",
-            "我们换个话题：来探讨一下 Agent 的 Session 自动路由和上下文防污染机制怎么设计。",
-            "上次我们讨论的那个 Cloudflare D1 向量检索后端架构的话题的 session 你可以调出来吗？",
-            "请把这些 session 整理成跟我有关的最核心主题的 session。",
+            "Let's discuss the knowledge-base backend: Cloudflare D1 plus vector search for conversation data.",
+            "We decided to split the core tables into tenant_topic_sessions and tenant_messages, isolated by user_id.",
+            "By the way, write me a Python regex that matches email addresses without disturbing the architecture topic.",
+            "Let's switch topics: how should agent session auto-routing and context anti-pollution be designed?",
+            "Can you recall the session about the Cloudflare D1 vector-search backend we discussed earlier?",
+            "Now consolidate all these sessions into the core themes that matter most to me.",
         ]
 
         for user_input in script:
@@ -342,7 +342,14 @@ def run_repl(engine: MailuoEngine) -> None:
                 continue
 
             if matched_cmd == "pi":
-                if rest_arg:
+                if rest_arg.startswith("-"):
+                    sess = engine.launch_agent_interactive("pi", extra_args=shlex.split(rest_arg))
+                    if sess:
+                        cached_active = sess
+                        console.print(
+                            f"[bold green]✅ Synced pi.dev discussion to topic [{escape(sess.title)}] ({sess.id})[/bold green]"
+                        )
+                elif rest_arg:
                     res = engine.chat(rest_arg, agent_backend="pi")
                     cached_active = res.active_session
                     render_turn(text, res, engine.storage.db_label)
@@ -510,7 +517,13 @@ def _main_inner() -> None:
         return
 
     if cmd == "pi":
-        if rest:
+        if rest.startswith("-"):
+            sess = engine.launch_agent_interactive("pi", extra_args=shlex.split(rest))
+            if sess:
+                console.print(
+                    f"[bold green]✅ Synced pi.dev discussion to topic [{escape(sess.title)}] ({sess.id}) — {escape(engine.storage.db_label)}[/bold green]"
+                )
+        elif rest:
             res = engine.chat(rest, agent_backend="pi")
             render_turn(f"mai pi {rest}".strip(), res, engine.storage.db_label)
         else:

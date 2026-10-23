@@ -276,6 +276,7 @@ class MailuoEngine:
         agent_backend: str,
         initial_prompt: Optional[str] = None,
         cwd: Optional[str | Path] = None,
+        extra_args: Optional[list[str]] = None,
     ) -> Optional[TopicSession]:
         """直接拉起 `pi` 或 `agy` 交互式界面（用于与 Agent 讨论具体话题，而不是把 pi/agy 当作话题名！）.
 
@@ -299,7 +300,7 @@ class MailuoEngine:
         if active_sess is None:
             is_placeholder = True
             active_sess = TopicSession(
-                title="未命名新话题",
+                title="Unnamed topic",
                 tags=[],
                 status=SessionStatus.ACTIVE,
             )
@@ -324,6 +325,7 @@ class MailuoEngine:
             is_tangent=False,
             interactive=True,
             cwd=cwd,
+            extra_args=extra_args,
         )
 
         captured = exec_res.captured_messages or []
@@ -332,7 +334,12 @@ class MailuoEngine:
             return None
 
         # 如果之前是未命名占位符，或者标题曾被误设为 "Google agy 专题讨论" / "pi.dev 专题讨论"
-        if is_placeholder or active_sess.title in ("未命名新话题", "Google agy 专题讨论", "pi.dev 专题讨论"):
+        if is_placeholder or active_sess.title in (
+            "未命名新话题",
+            "Unnamed topic",
+            "Google agy 专题讨论",
+            "pi.dev 专题讨论",
+        ):
             first_user_text = initial_prompt or next(
                 (m["content"] for m in captured if m["role"] == "user"),
                 "",
@@ -372,6 +379,7 @@ class MailuoEngine:
         is_tangent: bool,
         interactive: bool,
         cwd: Optional[str | Path],
+        extra_args: Optional[list[str]] = None,
     ) -> AgentExecutionResult:
         if agent_backend == "pi":
             return self.pi_bridge.run_turn(
@@ -382,6 +390,7 @@ class MailuoEngine:
                 is_tangent=is_tangent,
                 interactive=interactive,
                 cwd=cwd,
+                extra_args=extra_args,
             )
         if agent_backend == "agy":
             return self.agy_bridge.run_turn(
@@ -393,7 +402,7 @@ class MailuoEngine:
                 interactive=interactive,
                 cwd=cwd,
             )
-        raise ValueError(f"不支持的外部 Agent 类型: {agent_backend}")
+        raise ValueError(f"Unsupported external agent backend: {agent_backend}")
 
     # ------------------------------------------------------------------
     # 扫描并导入本地已有的 pi.dev 与 Google agy 原生会话记录

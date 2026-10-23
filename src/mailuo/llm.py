@@ -355,14 +355,14 @@ JSON format:
         if self._client is not None:
             try:
                 convo = "\n".join(f"{m.role}: {m.content}" for m in clean_msgs[-10:])
-                prompt = f"""请根据以下围绕话题《{session.title}》的对话，增量提炼结构化状态摘要。
-已有摘要: {session.summary}
-已有关键结论: {json.dumps(session.key_decisions, ensure_ascii=False)}
-最新对话:
+                prompt = f"""Incrementally refine the structured state summary for the topic "{session.title}".
+Existing summary: {session.summary}
+Existing key decisions: {json.dumps(session.key_decisions, ensure_ascii=False)}
+Latest conversation:
 {convo}
 
-返回严格 JSON:
-{{"summary": "一句话到两句话的核心进展摘要", "key_decisions": ["结论1", "结论2"], "open_questions": ["待定问题1"]}}"""
+Return strict JSON in English:
+{{"summary": "one or two sentences on the core progress", "key_decisions": ["decision 1", "decision 2"], "open_questions": ["open question 1"]}}"""
                 resp = self._client.chat.completions.create(
                     model=self.model,
                     messages=[{"role": "user", "content": prompt}],
@@ -429,14 +429,14 @@ JSON format:
         core_topic_req = meaningful_users[0][:65] if meaningful_users else (user_msgs[0][:65] if user_msgs else session.title)
         outcome_note = ""
         if session.key_decisions:
-            outcome_note = f"；关键产出与结论：{session.key_decisions[-1][:75]}"
+            outcome_note = f"; key outcome: {session.key_decisions[-1][:75]}"
         elif asst_msgs:
             last_asst_clean = re.sub(r"[*`#>]", "", self._strip_file_paths(asst_msgs[-1]))
             first_asst_sentence = re.split(r"[。\n]", last_asst_clean)[0].strip()
             if first_asst_sentence:
-                outcome_note = f"；最终进展：{first_asst_sentence[:75]}"
+                outcome_note = f"; latest progress: {first_asst_sentence[:75]}"
 
-        session.summary = f"探讨焦点：「{core_topic_req}」{outcome_note}（共 {len(user_msgs)} 轮交锋）。"
+        session.summary = f"Focus: \"{core_topic_req}\"{outcome_note} ({len(user_msgs)} user turns)."
 
         session.embedding = self.embed(
             f"{session.title} {' '.join(session.tags)} {session.summary} {' '.join(session.key_decisions)}"
@@ -465,13 +465,13 @@ JSON format:
                     }
                     for s in sessions
                 ]
-                prompt = f"""你是一个个人知识与会话脉络整理专家。
-以下是用户近期与 Agent 讨论的所有具体话题 Session 列表：
+                prompt = f"""You organise a person's discussion history into core themes.
+Below are all specific topic sessions the user recently discussed with agents:
 {json.dumps(sess_payload, ensure_ascii=False)}
 
-请将这些零散的 Session 聚类整理为若干个跟用户最相关的『核心主题 (Core Themes)』，并提炼每个核心主题下的跨会话核心共识。
-返回严格 JSON：
-{{"themes": [{{"name": "核心主题名称", "description": "主题范围描述", "consolidated_insight": "跨多个Session提炼的核心结论与脉络", "session_ids": ["sess_xxx"]}}]}}"""
+Cluster them into a few Core Themes that matter most to the user, and extract the cross-session insight of each theme. Write all values in English.
+Return strict JSON:
+{{"themes": [{{"name": "theme name", "description": "theme scope", "consolidated_insight": "cross-session conclusions and trajectory", "session_ids": ["sess_xxx"]}}]}}"""
                 resp = self._client.chat.completions.create(
                     model=self.model,
                     messages=[{"role": "user", "content": prompt}],
@@ -497,7 +497,7 @@ JSON format:
         # 本地智能聚类（结合用户真实工程领域 + 语义关键词映射）
         domain_rules = [
             (
-                "AI 网关与高并发负载均衡 (xlite / xgateway / Flux / SmartGate)",
+                "AI gateways & high-concurrency load balancing (xlite / xgateway / Flux / SmartGate)",
                 [
                     "xlite", "xgateway", "flux", "smartgate", "xrouter", "xlb",
                     "网关", "负载均衡", "并发", "调度", "压测", "new api", "newapi",
@@ -505,7 +505,7 @@ JSON format:
                 ],
             ),
             (
-                "AI Agent 脉络与知识自动化工具 (Mailuo / X.com Threads / Zenotes)",
+                "AI agent context & knowledge automation (Mailuo / X.com Threads / Zenotes)",
                 [
                     "agent", "session", "上下文", "记忆", "脉络", "mailuo", "mai",
                     "threads", "x.com", "zenotes", "笔记", "知识库", "核心主题",
@@ -513,19 +513,19 @@ JSON format:
                 ],
             ),
             (
-                "分布式算力集群与基础设施运维 (TileInfer / XEnsemble / GCP / Linux)",
+                "Distributed compute clusters & infrastructure ops (TileInfer / XEnsemble / GCP / Linux)",
                 [
                     "tileinfer", "xensemble", "cfchannel", "ssh", "gcp", "linux",
                     "主机", "hosts", "10.119", "192.168", "服务器", "部署", "postgresql",
                 ],
             ),
             (
-                "后端架构与数据库存储",
-                ["数据库", "sqlite", "cloudflare", "d1", "向量", "架构", "检索", "后端"],
+                "Backend architecture & data storage",
+                ["database", "sqlite", "cloudflare", "d1", "vector", "architecture", "向量", "架构", "检索", "后端"],
             ),
             (
-                "量化与投资理财",
-                ["量化", "股票", "策略", "交易", "理财", "回测", "基金"],
+                "Quant trading & personal finance",
+                ["quant", "stock", "strategy", "trading", "backtest", "量化", "股票", "策略", "交易", "理财", "回测", "基金"],
             ),
         ]
 
@@ -550,30 +550,30 @@ JSON format:
         # 对未命中预设领域的 Session 按项目标签或归入日常工程研发
         for s in unassigned:
             proj_tags = [t for t in s.tags if t not in ("pi.dev", "agy", "users")]
-            group_key = f"专题：{proj_tags[0]}" if proj_tags else "日常工程研发与系统排障"
+            group_key = f"Topic: {proj_tags[0]}" if proj_tags else "Everyday engineering & troubleshooting"
             buckets.setdefault(group_key, []).append(s)
 
         themes: list[CoreTheme] = []
         for theme_name, grouped_sessions in buckets.items():
-            titles = [f"《{gs.title}》" for gs in grouped_sessions[:6]]
+            titles = [f'"{gs.title}"' for gs in grouped_sessions[:6]]
             if len(grouped_sessions) > 6:
-                titles.append(f"等 {len(grouped_sessions)} 个话题")
+                titles.append(f"and {len(grouped_sessions) - 6} more")
             all_decisions: list[str] = []
             for gs in grouped_sessions:
                 all_decisions.extend(gs.key_decisions)
 
             insight_parts = [
-                f"聚合了 {len(grouped_sessions)} 个具体讨论话题（{', '.join(titles)}）。"
+                f"Groups {len(grouped_sessions)} discussion topics ({', '.join(titles)})."
             ]
             if all_decisions:
                 clean_decs = [self._strip_file_paths(d)[:65] for d in all_decisions if self._strip_file_paths(d)]
                 if clean_decs:
-                    insight_parts.append("核心沉淀：" + "；".join(dict.fromkeys(clean_decs[:4])))
+                    insight_parts.append("Key takeaways: " + "; ".join(dict.fromkeys(clean_decs[:4])))
 
             themes.append(
                 CoreTheme(
                     name=theme_name,
-                    description=f"围绕 {theme_name} 相关的系列深入探讨",
+                    description=f"Deep dives related to {theme_name}",
                     consolidated_insight=" ".join(insight_parts),
                     session_ids=[gs.id for gs in grouped_sessions],
                 )
@@ -619,7 +619,9 @@ JSON format:
         if not best_sentence and user_messages:
             best_sentence = self._strip_file_paths(user_messages[0])
 
-        title, tags = self._extract_title_and_tags(best_sentence or project_name or "工程探讨")
+        title, tags = self._extract_title_and_tags(
+            best_sentence or project_name or "Engineering discussion"
+        )
         if project_name:
             if project_name.lower() not in title.lower():
                 title = f"[{project_name}] {title}"
@@ -640,7 +642,7 @@ JSON format:
         if len(first_clause) > 26:
             title = first_clause[:26] + "..."
         else:
-            title = first_clause or "工程专题讨论"
+            title = first_clause or "Engineering discussion"
 
         known_keywords = [
             "xlite", "xgateway", "Flux", "SmartGate", "TileInfer", "XEnsemble",
