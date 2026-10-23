@@ -59,12 +59,13 @@ def run_interactive(cmd: list[str], cwd: Optional[str | Path] = None) -> subproc
     leave the agent running.
     """
     proc = subprocess.Popen(cmd, cwd=str(cwd) if cwd else None)
-    while proc.poll() is None:
+    while True:
         try:
+            if proc.poll() is not None:
+                return proc
             proc.wait()
         except KeyboardInterrupt:
             continue
-    return proc
 
 
 def build_mailuo_context_prompt(

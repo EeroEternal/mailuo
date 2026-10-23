@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import signal
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -328,7 +329,30 @@ class MailuoEngine:
             extra_args=extra_args,
         )
 
-        captured = exec_res.captured_messages or []
+        # Ctrl+C only quits the agent; the captured transcript still has to reach Mailuo, so
+        # ignore SIGINT for the (bounded) sync instead of dying mid-write.
+        prev_sigint = signal.signal(signal.SIGINT, signal.SIG_IGN)
+        try:
+            return self._sync_interactive_capture(
+                agent_backend=agent_backend,
+                active_sess=active_sess,
+                captured=exec_res.captured_messages or [],
+                recent_msgs=recent_msgs,
+                is_placeholder=is_placeholder,
+                initial_prompt=initial_prompt,
+            )
+        finally:
+            signal.signal(signal.SIGINT, prev_sigint)
+
+    def _sync_interactive_capture(
+        self,
+        agent_backend: str,
+        active_sess: TopicSession,
+        captured: list[dict[str, str]],
+        recent_msgs: list[MessageRecord],
+        is_placeholder: bool,
+        initial_prompt: Optional[str],
+    ) -> Optional[TopicSession]:
         if not captured and is_placeholder and not initial_prompt:
             # 用户打开了交互式界面但一句话没说就直接退出了，不保存空垃圾 Session
             return None

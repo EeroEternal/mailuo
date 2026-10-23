@@ -230,3 +230,63 @@ def test_multi_user_tenant_isolation(tmp_path: Path) -> None:
     assert [s.id for s in bob_sessions] == [bob_sess_id]
     assert engine_bob.storage.get_session(alice_sess_id) is None
 
+
+
+def test_run_interactive_survives_sigint(monkeypatch) -> None:
+    """Ctrl+C 落在 poll()/wait() 之间时必须继续等子进程，而不是让 mai 先死掉."""
+    import os
+    import signal
+    import threading
+
+    def interrupt() -> None:
+        os.kill(os.getpid(), signal.SIGINT)
+
+    timer = threading.Timer(0.2, interrupt)
+    timer.start()
+    try:
+        proc = run_interactive([sys.executable, "-c", "import time; time.sleep(0.6)"])
+    finally:
+        timer.cancel()
+    assert proc.returncode == 0
+
+
+def test_sigint_during_sync_is_ignored(tmp_path: Path, monkeypatch) -> None:
+    """pi 退出后的同步阶段再按 Ctrl+C，也不能丢掉已经捕获的对话."""
+    import os
+    import signal
+
+    from mailuo.adapters import AgentExecutionResult
+
+    engine = MailuoEngine(db_path=tmp_path / "sigint.db")
+
+    def fake_run_turn(**kwargs) -> AgentExecutionResult:
+        return AgentExecutionResult(
+            agent_name="pi",
+            external_session_id="fake",
+            command=["pi"],
+            reply="done",
+            returncode=0,
+            captured_messages=[
+                {"role": "user", "content": "hello"},
+                {"role": "assistant", "content": "world"},
+            ],
+        )
+
+    monkeypatch.setattr(engine.pi_bridge, "run_turn", fake_run_turn)
+
+    real_add_message = engine.storage.add_message
+    fired = {"done": False}
+
+    def add_message_with_sigint(record):
+        if not fired["done"]:
+            fired["done"] = True
+            os.kill(os.getpid(), signal.SIGINT)
+        return real_add_message(record)
+
+    monkeypatch.setattr(engine.storage, "add_message", add_message_with_sigint)
+
+    sess = engine.launch_agent_interactive("pi")
+    assert sess is not None
+    assert fired["done"]
+    contents = [m.content for m in engine.storage.get_session_messages(sess.id)]
+    assert contents == ["hello", "world"]

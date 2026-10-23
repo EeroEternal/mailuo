@@ -11,6 +11,7 @@ Usage:
   mai ls                   # List all topic sessions under current account
   mai themes               # Consolidate scattered sessions into Core Themes
   mai sync                 # Scan & upload local pi.dev and agy sessions to Cloudflare D1
+  mai update               # Upgrade the installed mai/mailuo package
 """
 
 from __future__ import annotations
@@ -20,6 +21,8 @@ import getpass
 import os
 import readline  # noqa: F401 — enable terminal arrow keys & history
 import shlex
+import shutil
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -31,6 +34,7 @@ from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.table import Table
 
+from . import __version__
 from .engine import MailuoEngine, TurnResult
 from .models import RouteActionType, TopicSession
 from .storage import (
@@ -41,6 +45,24 @@ from .storage import (
 )
 
 console = Console()
+
+
+def self_update() -> None:
+    """Upgrade mailuo in place (pipx when installed by pipx, otherwise pip)."""
+    in_pipx = "pipx/venvs" in sys.prefix
+    pipx = shutil.which("pipx")
+    cmd = (
+        [pipx, "upgrade", "mailuo"]
+        if in_pipx and pipx
+        else [sys.executable, "-m", "pip", "install", "--upgrade", "mailuo"]
+    )
+    console.print(f"[cyan]⬆️  Updating mailuo (current: {__version__}) ...[/cyan]")
+    if subprocess.run(cmd).returncode != 0:
+        console.print(
+            f"[bold red]Update failed. Run it manually: {' '.join(cmd)}[/bold red]"
+        )
+        return
+    console.print("[bold green]✅ Updated. Restart `mai` to use the new version.[/bold green]")
 
 KNOWN_COMMANDS = {
     "ls": "ls",
@@ -63,6 +85,8 @@ KNOWN_COMMANDS = {
     "q": "quit",
     "quit": "quit",
     "exit": "quit",
+    "update": "update",
+    "upgrade": "update",
 }
 
 
@@ -252,7 +276,7 @@ def run_repl(engine: MailuoEngine) -> None:
         Panel.fit(
             f"[bold cyan]mai[/bold cyan] | Storage: [bold green]{escape(engine.storage.db_label)}[/bold green]\n"
             "Type any message to chat (auto-detects side-tangents, recalls past sessions, or consolidates themes).\n"
-            "Commands: [bold]ls[/bold] (sessions) | [bold]themes[/bold] (core themes) | [bold]pi[/bold] (launch pi) | [bold]agy[/bold] (launch agy) | [bold]sync[/bold] (scan & upload) | [bold]whoami[/bold] (account) | [bold]q / Ctrl+C[/bold] (exit)",
+            "Commands: [bold]ls[/bold] (sessions) | [bold]themes[/bold] (core themes) | [bold]pi[/bold] (launch pi) | [bold]agy[/bold] (launch agy) | [bold]sync[/bold] (scan & upload) | [bold]update[/bold] (upgrade mai) | [bold]whoami[/bold] (account) | [bold]q / Ctrl+C[/bold] (exit)",
             border_style="cyan",
         )
     )
@@ -291,6 +315,10 @@ def run_repl(engine: MailuoEngine) -> None:
 
             if matched_cmd == "help":
                 console.print(Panel.fit(HELP_TEXT, border_style="cyan"))
+                continue
+
+            if matched_cmd == "update":
+                self_update()
                 continue
 
             if matched_cmd == "whoami":
@@ -409,6 +437,7 @@ Session & Agent Commands:
   [bold green]mai rm <session_id>[/bold green]           Delete a specific topic session
   [bold green]mai themes[/bold green]                    Consolidate scattered sessions into Core Themes
   [bold green]mai sync [pi|agy] [--force][/bold green]   Scan & upload local pi.dev and agy sessions to Cloudflare D1
+  [bold green]mai update[/bold green]                     Upgrade the installed mai/mailuo package (pipx or pip)
   [bold green]mai demo[/bold green]                      Run automated demonstration
 """
 
@@ -432,6 +461,10 @@ def _main_inner() -> None:
 
     if cmd in ("demo", "--demo"):
         run_demo()
+        return
+
+    if cmd in ("update", "upgrade", "--update", "--upgrade"):
+        self_update()
         return
 
     if cmd in ("register", "reg", "signup"):

@@ -47,7 +47,7 @@ class LLMBackend:
             try:
                 from openai import OpenAI
 
-                self._client = OpenAI(api_key=self.api_key, base_url=self.base_url)
+                self._client = OpenAI(api_key=self.api_key, base_url=self.base_url, timeout=60)
             except Exception:
                 self._client = None
 
