@@ -1,6 +1,6 @@
 [project]
 name = "mailuo"
-version = "0.3.0"
+version = "0.3.1"
 description = "mai (Mailuo) — Topic-centric Agent Session & Core Theme Manager for pi.dev & Google Antigravity, backed by multi-tenant Cloudflare D1"
 readme = "README.md"
 requires-python = ">=3.9"

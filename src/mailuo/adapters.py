@@ -150,10 +150,8 @@ class PiDevBridge:
         if is_tangent:
             cmd.append("--no-session")
         elif not explicit_resume:
-            pi_sid = self.ensure_pi_session_id(session)
-            cmd.extend(["--session-id", pi_sid])
-            if session.title and not session.title.startswith(("未命名", "Unnamed")):
-                cmd.extend(["--name", f"[Mailuo] {session.title}"])
+            # No --name: pi would pin a (possibly non-English) topic title in its footer and session file.
+            cmd.extend(["--session-id", self.ensure_pi_session_id(session)])
 
         # A resumed pi session already carries its own history, so no extra context header.
         if (has_meaningful_context(session, recent_messages) or is_tangent) and not explicit_resume:

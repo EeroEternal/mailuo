@@ -87,7 +87,7 @@ def _gateway_post(
     url = f"{base}{path}"
     headers = {
         "Content-Type": "application/json",
-        "User-Agent": "mailuo-cli/0.3.0",
+        "User-Agent": "mailuo-cli/0.3.1",
     }
     if token:
         headers["Authorization"] = f"Bearer {token}"
