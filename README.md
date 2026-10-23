@@ -59,6 +59,9 @@ mai agy                      # 直接进入 Google Antigravity (agy) 交互式�
 mai ls                       # 查看当前账号下的所有 Topic Sessions
 mai themes                   # 把当前账号下的零散 Session 自动整理成『最核心主题』
 mai sync                     # 将当前机器上的 ~/.pi/agent/sessions 和 ~/.gemini/antigravity-cli/brain 同步至你的云端账号
+mai update                   # 升级已安装的 mailuo（pipx 或 pip），无需手动重装
+
+# 注：0.3.1 及更早版本没有 mai update，需先执行一次 `pipx upgrade mailuo`（或 `pip install -U mailuo`）
 
 # 6) 进入交互式控制台
 mai
